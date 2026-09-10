@@ -501,10 +501,10 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
     <div class="table-scroll">
       <table id="main-table">
         <thead id="main-thead"><tr>
-          <th onclick="setSort('login')" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">↕</span></th>
-          <th onclick="setSort('created')" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">↕</span></th>
-          <th onclick="setSort('days')" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">↕</span></th>
-          <th onclick="setSort('followedAt')" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">↕</span></th>
+          <th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>
+          <th onclick="setSort(&quot;created&quot;)" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">&#8597;</span></th>
+          <th onclick="setSort(&quot;days&quot;)" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">&#8597;</span></th>
+          <th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>
           <th>Source</th>
           <th>Status</th>
         </tr></thead>
@@ -583,21 +583,21 @@ function setFilter(f) {
   // Swap table header for unfollowed view
   const thead = document.getElementById('main-thead');
   if (f === 'unfollowed') {
-    thead.innerHTML = "<tr>" +
-      "<th onclick=\"setSort('login')\" style=\"cursor:pointer;user-select:none\">Username <span class=\"sort-arrow\" id=\"arr-login\">\u2195</span></th>" +
-      "<th onclick=\"setSort('followedAt')\" style=\"cursor:pointer;user-select:none\">Followed for <span class=\"sort-arrow\" id=\"arr-followedAt\">\u2195</span></th>" +
-      "<th>Unfollowed at</th>" +
-      "<th>Status</th>" +
-      "</tr>";
+    thead.innerHTML = '<tr>' +
+      '<th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>' +
+      '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Followed for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
+      '<th>Unfollowed at</th>' +
+      '<th>Status</th>' +
+      '</tr>';
   } else {
-    thead.innerHTML = "<tr>" +
-      "<th onclick=\"setSort('login')\" style=\"cursor:pointer;user-select:none\">Username <span class=\"sort-arrow\" id=\"arr-login\">\u2195</span></th>" +
-      "<th onclick=\"setSort('created')\" style=\"cursor:pointer;user-select:none\">Created <span class=\"sort-arrow\" id=\"arr-created\">\u2195</span></th>" +
-      "<th onclick=\"setSort('days')\" style=\"cursor:pointer;user-select:none\">Age <span class=\"sort-arrow\" id=\"arr-days\">\u2195</span></th>" +
-      "<th onclick=\"setSort('followedAt')\" style=\"cursor:pointer;user-select:none\">Following for <span class=\"sort-arrow\" id=\"arr-followedAt\">\u2195</span></th>" +
-      "<th>Source</th>" +
-      "<th>Status</th>" +
-      "</tr>";
+    thead.innerHTML = '<tr>' +
+      '<th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>' +
+      '<th onclick="setSort(&quot;created&quot;)" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">&#8597;</span></th>' +
+      '<th onclick="setSort(&quot;days&quot;)" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">&#8597;</span></th>' +
+      '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
+      '<th>Source</th>' +
+      '<th>Status</th>' +
+      '</tr>';
   }
   updateSortArrows();
   renderTable();
