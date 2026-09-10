@@ -583,21 +583,21 @@ function setFilter(f) {
   // Swap table header for unfollowed view
   const thead = document.getElementById('main-thead');
   if (f === 'unfollowed') {
-    thead.innerHTML = '<tr>' +
-      '<th onclick="setSort(\'login\')" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">↕</span></th>' +
-      '<th onclick="setSort(\'followedAt\')" style="cursor:pointer;user-select:none">Followed for <span class="sort-arrow" id="arr-followedAt">↕</span></th>' +
-      '<th>Unfollowed at</th>' +
-      '<th>Status</th>' +
-      '</tr>';
+    thead.innerHTML = "<tr>" +
+      "<th onclick=\"setSort('login')\" style=\"cursor:pointer;user-select:none\">Username <span class=\"sort-arrow\" id=\"arr-login\">\u2195</span></th>" +
+      "<th onclick=\"setSort('followedAt')\" style=\"cursor:pointer;user-select:none\">Followed for <span class=\"sort-arrow\" id=\"arr-followedAt\">\u2195</span></th>" +
+      "<th>Unfollowed at</th>" +
+      "<th>Status</th>" +
+      "</tr>";
   } else {
-    thead.innerHTML = '<tr>' +
-      '<th onclick="setSort(\'login\')" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">↕</span></th>' +
-      '<th onclick="setSort(\'created\')" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">↕</span></th>' +
-      '<th onclick="setSort(\'days\')" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">↕</span></th>' +
-      '<th onclick="setSort(\'followedAt\')" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">↕</span></th>' +
-      '<th>Source</th>' +
-      '<th>Status</th>' +
-      '</tr>';
+    thead.innerHTML = "<tr>" +
+      "<th onclick=\"setSort('login')\" style=\"cursor:pointer;user-select:none\">Username <span class=\"sort-arrow\" id=\"arr-login\">\u2195</span></th>" +
+      "<th onclick=\"setSort('created')\" style=\"cursor:pointer;user-select:none\">Created <span class=\"sort-arrow\" id=\"arr-created\">\u2195</span></th>" +
+      "<th onclick=\"setSort('days')\" style=\"cursor:pointer;user-select:none\">Age <span class=\"sort-arrow\" id=\"arr-days\">\u2195</span></th>" +
+      "<th onclick=\"setSort('followedAt')\" style=\"cursor:pointer;user-select:none\">Following for <span class=\"sort-arrow\" id=\"arr-followedAt\">\u2195</span></th>" +
+      "<th>Source</th>" +
+      "<th>Status</th>" +
+      "</tr>";
   }
   updateSortArrows();
   renderTable();
