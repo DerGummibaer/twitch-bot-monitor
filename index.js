@@ -29,6 +29,7 @@ function isSuspect(login, createdAt) {
 // ─── Shared state ─────────────────────────────────────────────────────────────
 const state = {
   accounts:      new Map(),   // login → account object
+  unfollows:     [],          // [{login, followedAt, unfollowedAt}] — last 200
   alerted:       new Set(),   // logins already Discord-alerted
   lastScan:      null,
   lastFollowerScan: null,
@@ -91,6 +92,7 @@ async function fetchFollowers(broadcasterId, modId) {
     cursor = d.pagination?.cursor;
   } while (cursor);
   addLog(`Follower scan complete — ${followers.length.toLocaleString()} followers fetched`);
+  // Returns array of {user_login, followed_at}
   return followers;
 }
 
@@ -157,14 +159,36 @@ async function runScan() {
     const doFollowers = !state.lastFollowerScan ||
       (now - state.lastFollowerScan) > FOLLOWER_INTERVAL_SECONDS * 1000;
 
-    let followerLogins = new Set();
+    // Map of login → followed_at for this scan
+    let followerLogins   = new Set();
+    let followerDateMap  = new Map(); // login → followed_at ISO string
     if (doFollowers) {
       const followers = await fetchFollowers(broadcasterId, modId);
-      followers.forEach(f => followerLogins.add(f.user_login));
+      followers.forEach(f => {
+        followerLogins.add(f.user_login);
+        followerDateMap.set(f.user_login, f.followed_at);
+      });
       state.lastFollowerScan = now;
+
+      // Detect unfollows — anyone who WAS a follower but isn't anymore
+      for (const [login, acc] of state.accounts) {
+        if (acc.isFollower && !followerLogins.has(login)) {
+          state.unfollows.unshift({
+            login,
+            followedAt:   acc.followedAt   || null,
+            unfollowedAt: new Date().toISOString(),
+            suspect:      acc.suspect
+          });
+          addLog(`👋 ${login} unfollowed`, 'info');
+        }
+      }
+      if (state.unfollows.length > 200) state.unfollows = state.unfollows.slice(0, 200);
     } else {
       for (const [login, acc] of state.accounts) {
-        if (acc.isFollower) followerLogins.add(login);
+        if (acc.isFollower) {
+          followerLogins.add(login);
+          if (acc.followedAt) followerDateMap.set(login, acc.followedAt);
+        }
       }
     }
 
@@ -183,6 +207,7 @@ async function runScan() {
           suspect:    isSuspect(u.login, u.created_at),
           inChat:     chatterLogins.has(u.login),
           isFollower: followerLogins.has(u.login),
+          followedAt: followerDateMap.get(u.login) || null,
           firstSeen:  new Date().toISOString()
         });
       });
@@ -192,7 +217,11 @@ async function runScan() {
     for (const [login, acc] of state.accounts) {
       if (!toFetch.includes(login)) {
         acc.inChat = chatterLogins.has(login);
-        if (doFollowers) acc.isFollower = followerLogins.has(login);
+        if (doFollowers) {
+          acc.isFollower = followerLogins.has(login);
+          // Update followedAt if we have it (may have been null before)
+          if (followerDateMap.has(login)) acc.followedAt = followerDateMap.get(login);
+        }
       }
     }
 
@@ -302,9 +331,11 @@ app.get('/api/state', requireAuth, (req, res) => {
       suspectsChat:   suspects.filter(v => v.inChat).length,
       suspectsFollow: suspects.filter(v => !v.inChat).length,
       newAccounts:    accounts.filter(v => v.days < 30).length,
-      established:    accounts.filter(v => v.days >= 365).length
+      established:    accounts.filter(v => v.days >= 365).length,
+      unfollows:      state.unfollows.length
     },
-    accounts
+    accounts,
+    unfollows: state.unfollows
   });
 });
 
@@ -460,6 +491,7 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
     <button class="chip" onclick="setFilter('suspect')" id="f-suspect">⚠ Suspected bots</button>
     <button class="chip" onclick="setFilter('chatters')" id="f-chatters">In chat now</button>
     <button class="chip" onclick="setFilter('followers-only')" id="f-followers-only">Followers only</button>
+    <button class="chip" onclick="setFilter('unfollowed')" id="f-unfollowed">👋 Unfollowed <span id="unfollow-badge" style="display:none;background:var(--red);color:#fff;border-radius:100px;padding:1px 6px;font-size:10px;margin-left:4px">0</span></button>
   </div>
   <div class="search-wrap">
     <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -467,9 +499,9 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
   </div>
   <div class="table-wrap" style="margin-bottom:1.5rem">
     <div class="table-scroll">
-      <table>
-        <thead><tr>
-          <th>Username</th><th>Created</th><th>Age</th><th>Source</th><th>Status</th>
+      <table id="main-table">
+        <thead id="main-thead"><tr>
+          <th>Username</th><th>Created</th><th>Age</th><th>Following for</th><th>Source</th><th>Status</th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -482,12 +514,20 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
 
 <script>
 let allAccounts = [];
+let allUnfollows = [];
 let activeFilter = 'all';
 
 function setFilter(f) {
   activeFilter = f;
   document.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
   document.getElementById('f-' + f).classList.add('active');
+  // Swap table header for unfollowed view
+  const thead = document.getElementById('main-thead');
+  if (f === 'unfollowed') {
+    thead.innerHTML = '<tr><th>Username</th><th>Followed for</th><th>Unfollowed at</th><th>Status</th></tr>';
+  } else {
+    thead.innerHTML = '<tr><th>Username</th><th>Created</th><th>Age</th><th>Following for</th><th>Source</th><th>Status</th></tr>';
+  }
   renderTable();
 }
 
@@ -497,15 +537,48 @@ function ageBadge(days) {
   return ['badge-est', 'Established'];
 }
 function formatAge(days) {
+  if (days === null || days === undefined || isNaN(days)) return '—';
   if (days < 1)   return 'Today';
   if (days < 30)  return days + 'd';
   if (days < 365) return Math.floor(days / 30) + 'mo';
   const y = Math.floor(days / 365), m = Math.floor((days % 365) / 30);
   return m > 0 ? y + 'y ' + m + 'mo' : y + 'y';
 }
+function formatFollowDuration(followedAt) {
+  if (!followedAt) return '—';
+  const days = Math.floor((Date.now() - new Date(followedAt)) / 86400000);
+  return formatAge(days);
+}
+function formatFollowDurationBetween(followedAt, unfollowedAt) {
+  if (!followedAt || !unfollowedAt) return '—';
+  const days = Math.floor((new Date(unfollowedAt) - new Date(followedAt)) / 86400000);
+  return formatAge(days);
+}
 
 function renderTable() {
   const q = document.getElementById('search').value.toLowerCase();
+  const tbody = document.getElementById('tbody');
+
+  if (activeFilter === 'unfollowed') {
+    let data = allUnfollows.filter(v => v.login.toLowerCase().includes(q));
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">No unfollows recorded yet — checks every 10 min.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(v => {
+      const duration   = formatFollowDurationBetween(v.followedAt, v.unfollowedAt);
+      const unfollowAt = new Date(v.unfollowedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+      const botBadge   = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
+      return '<tr>' +
+        '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
+        '<td style="color:var(--muted)">' + duration + '</td>' +
+        '<td style="color:var(--faint)">' + unfollowAt + '</td>' +
+        '<td>' + botBadge + '</td>' +
+        '</tr>';
+    }).join('');
+    return;
+  }
+
   let data = allAccounts.filter(v => {
     if (!v.login.toLowerCase().includes(q)) return false;
     if (activeFilter === 'suspect')        return v.suspect;
@@ -513,23 +586,24 @@ function renderTable() {
     if (activeFilter === 'followers-only') return !v.inChat;
     return true;
   });
-  const tbody = document.getElementById('tbody');
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">No accounts match this filter.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">No accounts match this filter.</td></tr>';
     return;
   }
   tbody.innerHTML = data.map(v => {
     const [ageCls, ageLabel] = ageBadge(v.days);
-    const dateStr = new Date(v.created).toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
-    const rowCls  = v.suspect ? ' class="suspected"' : '';
-    const botBadge = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
-    const srcBadge = v.inChat
+    const dateStr   = new Date(v.created).toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
+    const rowCls    = v.suspect ? ' class="suspected"' : '';
+    const botBadge  = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
+    const srcBadge  = v.inChat
       ? '<span class="badge badge-chat">In chat</span>' + (v.isFollower ? '<span class="badge badge-follow">Follower</span>' : '')
       : '<span class="badge badge-follow">Follower</span>';
+    const followDur = v.isFollower ? formatFollowDuration(v.followedAt) : '—';
     return '<tr' + rowCls + '>' +
       '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
       '<td style="color:var(--muted)">' + dateStr + '</td>' +
       '<td style="color:var(--faint)">' + formatAge(v.days) + '</td>' +
+      '<td style="color:var(--muted)">' + followDur + '</td>' +
       '<td>' + srcBadge + '</td>' +
       '<td>' + botBadge + '<span class="badge ' + ageCls + '">' + ageLabel + '</span></td>' +
       '</tr>';
@@ -554,16 +628,26 @@ async function poll() {
     else { eb.style.display = 'none'; }
 
     // Stats
-    document.getElementById('s-chatters').textContent       = d.stats.chatters.toLocaleString();
-    document.getElementById('s-followers').textContent      = d.stats.followers.toLocaleString();
-    document.getElementById('s-suspects').textContent       = d.stats.suspects;
-    document.getElementById('s-suspects-chat').textContent  = d.stats.suspectsChat;
-    document.getElementById('s-suspects-follow').textContent= d.stats.suspectsFollow;
-    document.getElementById('s-new').textContent            = d.stats.newAccounts;
-    document.getElementById('s-est').textContent            = d.stats.established;
+    document.getElementById('s-chatters').textContent        = d.stats.chatters.toLocaleString();
+    document.getElementById('s-followers').textContent       = d.stats.followers.toLocaleString();
+    document.getElementById('s-suspects').textContent        = d.stats.suspects;
+    document.getElementById('s-suspects-chat').textContent   = d.stats.suspectsChat;
+    document.getElementById('s-suspects-follow').textContent = d.stats.suspectsFollow;
+    document.getElementById('s-new').textContent             = d.stats.newAccounts;
+    document.getElementById('s-est').textContent             = d.stats.established;
 
-    // Table
-    allAccounts = d.accounts;
+    // Unfollow badge on chip
+    const ub = document.getElementById('unfollow-badge');
+    if (d.stats.unfollows > 0) {
+      ub.textContent = d.stats.unfollows;
+      ub.style.display = 'inline';
+    } else {
+      ub.style.display = 'none';
+    }
+
+    // Data
+    allAccounts  = d.accounts;
+    allUnfollows = d.unfollows || [];
     renderTable();
 
     // Log
@@ -579,7 +663,7 @@ async function poll() {
 }
 
 poll();
-setInterval(poll, 10000); // refresh dashboard every 10s
+setInterval(poll, 10000);
 </script>
 </body>
 </html>`;
