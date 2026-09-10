@@ -501,7 +501,12 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
     <div class="table-scroll">
       <table id="main-table">
         <thead id="main-thead"><tr>
-          <th>Username</th><th>Created</th><th>Age</th><th>Following for</th><th>Source</th><th>Status</th>
+          <th onclick="setSort('login')" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">↕</span></th>
+          <th onclick="setSort('created')" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">↕</span></th>
+          <th onclick="setSort('days')" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">↕</span></th>
+          <th onclick="setSort('followedAt')" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">↕</span></th>
+          <th>Source</th>
+          <th>Status</th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -512,10 +517,64 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
   <div class="log-list" id="log-list"><div style="color:var(--faint)">Loading…</div></div>
 </main>
 
+<style>
+.sort-arrow { font-size: 11px; color: var(--faint); margin-left: 3px; }
+th.sort-active .sort-arrow { color: var(--purple); }
+th:hover .sort-arrow { color: var(--muted); }
+</style>
+
 <script>
 let allAccounts = [];
 let allUnfollows = [];
 let activeFilter = 'all';
+let sortKey = 'created';
+let sortDir = 1; // 1 = asc, -1 = desc
+
+const SORTABLE = ['login', 'created', 'days', 'followedAt'];
+
+function setSort(key) {
+  if (!SORTABLE.includes(key)) return;
+  if (sortKey === key) sortDir *= -1;
+  else { sortKey = key; sortDir = 1; }
+  updateSortArrows();
+  renderTable();
+}
+
+function updateSortArrows() {
+  SORTABLE.forEach(k => {
+    const el = document.getElementById('arr-' + k);
+    const th = el ? el.closest('th') : null;
+    if (!el) return;
+    if (k === sortKey) {
+      el.textContent = sortDir === 1 ? '↑' : '↓';
+      th && th.classList.add('sort-active');
+    } else {
+      el.textContent = '↕';
+      th && th.classList.remove('sort-active');
+    }
+  });
+}
+
+function sortAccounts(data) {
+  return [...data].sort((a, b) => {
+    let va, vb;
+    if (sortKey === 'login') {
+      return sortDir * a.login.localeCompare(b.login);
+    }
+    if (sortKey === 'created') {
+      va = new Date(a.created).getTime();
+      vb = new Date(b.created).getTime();
+    } else if (sortKey === 'days') {
+      va = a.days ?? Infinity;
+      vb = b.days ?? Infinity;
+    } else if (sortKey === 'followedAt') {
+      // Sort by follow duration descending = longest followers first
+      va = a.followedAt ? new Date(a.followedAt).getTime() : Infinity;
+      vb = b.followedAt ? new Date(b.followedAt).getTime() : Infinity;
+    }
+    return sortDir * (va < vb ? -1 : va > vb ? 1 : 0);
+  });
+}
 
 function setFilter(f) {
   activeFilter = f;
@@ -524,10 +583,23 @@ function setFilter(f) {
   // Swap table header for unfollowed view
   const thead = document.getElementById('main-thead');
   if (f === 'unfollowed') {
-    thead.innerHTML = '<tr><th>Username</th><th>Followed for</th><th>Unfollowed at</th><th>Status</th></tr>';
+    thead.innerHTML = '<tr>' +
+      '<th onclick="setSort(\'login\')" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">↕</span></th>' +
+      '<th onclick="setSort(\'followedAt\')" style="cursor:pointer;user-select:none">Followed for <span class="sort-arrow" id="arr-followedAt">↕</span></th>' +
+      '<th>Unfollowed at</th>' +
+      '<th>Status</th>' +
+      '</tr>';
   } else {
-    thead.innerHTML = '<tr><th>Username</th><th>Created</th><th>Age</th><th>Following for</th><th>Source</th><th>Status</th></tr>';
+    thead.innerHTML = '<tr>' +
+      '<th onclick="setSort(\'login\')" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">↕</span></th>' +
+      '<th onclick="setSort(\'created\')" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">↕</span></th>' +
+      '<th onclick="setSort(\'days\')" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">↕</span></th>' +
+      '<th onclick="setSort(\'followedAt\')" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">↕</span></th>' +
+      '<th>Source</th>' +
+      '<th>Status</th>' +
+      '</tr>';
   }
+  updateSortArrows();
   renderTable();
 }
 
@@ -561,6 +633,16 @@ function renderTable() {
 
   if (activeFilter === 'unfollowed') {
     let data = allUnfollows.filter(v => v.login.toLowerCase().includes(q));
+    // Sort unfollows by login or followedAt
+    data = [...data].sort((a, b) => {
+      if (sortKey === 'login') return sortDir * a.login.localeCompare(b.login);
+      if (sortKey === 'followedAt') {
+        const va = a.followedAt ? new Date(a.followedAt).getTime() : Infinity;
+        const vb = b.followedAt ? new Date(b.followedAt).getTime() : Infinity;
+        return sortDir * (va < vb ? -1 : va > vb ? 1 : 0);
+      }
+      return 0;
+    });
     if (!data.length) {
       tbody.innerHTML = '<tr><td colspan="4" class="empty">No unfollows recorded yet — checks every 10 min.</td></tr>';
       return;
@@ -586,6 +668,7 @@ function renderTable() {
     if (activeFilter === 'followers-only') return !v.inChat;
     return true;
   });
+  data = sortAccounts(data);
   if (!data.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">No accounts match this filter.</td></tr>';
     return;
@@ -662,6 +745,7 @@ async function poll() {
   } catch(e) { console.error('Poll error:', e); }
 }
 
+updateSortArrows();
 poll();
 setInterval(poll, 10000);
 </script>
