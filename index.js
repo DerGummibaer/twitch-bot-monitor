@@ -339,6 +339,55 @@ app.get('/api/state', requireAuth, (req, res) => {
   });
 });
 
+// API — ban a user
+app.post('/api/ban', requireAuth, async (req, res) => {
+  const { login } = req.body;
+  if (!login) return res.status(400).json({ error: 'Missing login' });
+
+  try {
+    // Resolve broadcaster + mod IDs
+    const logins = [TWITCH_CHANNEL, TWITCH_MOD_LOGIN].filter(Boolean);
+    const users  = await resolveUserIds(logins);
+    const broadcaster = users.find(u => u.login.toLowerCase() === TWITCH_CHANNEL.toLowerCase());
+    const mod         = users.find(u => u.login.toLowerCase() === (TWITCH_MOD_LOGIN || TWITCH_CHANNEL).toLowerCase());
+    if (!broadcaster) throw new Error('Broadcaster not found');
+    const broadcasterId = broadcaster.id;
+    const modId         = mod ? mod.id : broadcasterId;
+
+    // Resolve target user ID
+    const targets = await resolveUserIds([login]);
+    if (!targets.length) return res.status(404).json({ error: `User "${login}" not found` });
+    const targetId = targets[0].id;
+
+    // Issue ban
+    const r = await fetch(
+      `https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${broadcasterId}&moderator_id=${modId}`,
+      {
+        method:  'POST',
+        headers: { ...twitchHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: {
+            user_id: targetId,
+            reason:  'If you are not a bot, appeal and you\'ll be unbanned.'
+          }
+        })
+      }
+    );
+
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.message || `Ban failed (HTTP ${r.status})`);
+
+    // Remove from state so they vanish from the table
+    state.accounts.delete(login);
+    addLog(`🔨 Banned ${login}`, 'warn');
+    res.json({ ok: true });
+
+  } catch (e) {
+    addLog(`Ban error for ${login}: ${e.message}`, 'error');
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── HTML pages (inline) ──────────────────────────────────────────────────────
 function loginPage(error = '') {
   return `<!DOCTYPE html>
@@ -458,6 +507,10 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
 .log-entry.warn,.log-entry.error{color:var(--amber)}
 .log-entry.error{color:var(--red)}
 .empty{text-align:center;color:var(--faint);padding:2.5rem;font-size:13px}
+.ban-btn{background:transparent;border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:6px;padding:2px 8px;font-size:11px;font-family:inherit;cursor:pointer;transition:all .12s;white-space:nowrap}
+.ban-btn:hover{background:var(--red-bg);border-color:var(--red)}
+.ban-btn:disabled{opacity:0.4;cursor:default}
+.ban-btn.done{border-color:var(--faint);color:var(--faint)}
 @media(max-width:600px){.stats-grid,.stats-grid2{grid-template-columns:repeat(2,1fr)}.page{padding:1rem}.header{padding:0 1rem}}
 </style>
 </head>
@@ -507,6 +560,7 @@ tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
           <th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>
           <th>Source</th>
           <th>Status</th>
+          <th></th>
         </tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -597,6 +651,7 @@ function setFilter(f) {
       '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
       '<th>Source</th>' +
       '<th>Status</th>' +
+      '<th></th>' +
       '</tr>';
   }
   updateSortArrows();
@@ -670,7 +725,7 @@ function renderTable() {
   });
   data = sortAccounts(data);
   if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">No accounts match this filter.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No accounts match this filter.</td></tr>';
     return;
   }
   tbody.innerHTML = data.map(v => {
@@ -682,6 +737,9 @@ function renderTable() {
       ? '<span class="badge badge-chat">In chat</span>' + (v.isFollower ? '<span class="badge badge-follow">Follower</span>' : '')
       : '<span class="badge badge-follow">Follower</span>';
     const followDur = v.isFollower ? formatFollowDuration(v.followedAt) : '—';
+    const banBtn    = v.suspect
+      ? '<button class="ban-btn" id="ban-' + v.login + '" onclick="banUser(&quot;' + v.login + '&quot;)">🔨 Ban</button>'
+      : '';
     return '<tr' + rowCls + '>' +
       '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
       '<td style="color:var(--muted)">' + dateStr + '</td>' +
@@ -689,8 +747,34 @@ function renderTable() {
       '<td style="color:var(--muted)">' + followDur + '</td>' +
       '<td>' + srcBadge + '</td>' +
       '<td>' + botBadge + '<span class="badge ' + ageCls + '">' + ageLabel + '</span></td>' +
+      '<td>' + banBtn + '</td>' +
       '</tr>';
   }).join('');
+}
+
+async function banUser(login) {
+  const btn = document.getElementById('ban-' + login);
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = 'Banning…';
+  try {
+    const r = await fetch('/api/ban', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ login })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Ban failed');
+    btn.textContent = '✓ Banned';
+    btn.classList.add('done');
+    // Fade out the row
+    const row = btn.closest('tr');
+    if (row) { row.style.transition = 'opacity 0.6s'; row.style.opacity = '0.3'; }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '🔨 Ban';
+    alert('Ban failed: ' + e.message);
+  }
 }
 
 async function poll() {
