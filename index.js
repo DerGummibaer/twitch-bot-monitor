@@ -117,6 +117,12 @@ async function sendDiscordAlert(newBots) {
       title:       `⚠️ ${newBots.length} suspected bot${newBots.length !== 1 ? 's' : ''} detected in ${TWITCH_CHANNEL}`,
       description: `Pattern: 5 letters + 2 numbers, created May 2024 · ${summary}\n\n${lines}`,
       color:       0xf59e0b,
+      url:         'https://twitch-bot-monitor.onrender.com',
+      fields: [{
+        name:  '🔨 Take action',
+        value: '[Open dashboard → Suspected bots](https://twitch-bot-monitor.onrender.com)',
+        inline: false
+      }],
       timestamp:   new Date().toISOString(),
       footer:      { text: 'Twitch Bot Monitor · render.com' }
     }]
