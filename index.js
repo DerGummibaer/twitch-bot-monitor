@@ -1,857 +1,751 @@
 'use strict';
+const express = require('express');
+const session = require('express-session');
+const fetch = require('node-fetch');
+const { createClient } = require('@libsql/client');
 
-const express      = require('express');
-const session      = require('express-session');
-const fetch        = require('node-fetch');
-const path         = require('path');
+// ─── Config from env ────────────────────────────────────────────────────────
+const PORT             = process.env.PORT || 3000;
+const TWITCH_TOKEN     = process.env.TWITCH_TOKEN;
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_CHANNEL   = process.env.TWITCH_CHANNEL;
+const DISCORD_WEBHOOK  = process.env.DISCORD_WEBHOOK;
+const DASHBOARD_PASS   = process.env.DASHBOARD_PASS || 'changeme';
+const SESSION_SECRET   = process.env.SESSION_SECRET || 'twitch-monitor-secret';
+const TURSO_URL        = process.env.TURSO_URL;
+const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
+const DASHBOARD_URL    = process.env.DASHBOARD_URL || 'https://twitch-bot-monitor.onrender.com';
 
-// ─── Config from environment variables ───────────────────────────────────────
-const {
-  TWITCH_CLIENT_ID,
-  TWITCH_TOKEN,        // raw OAuth token (without "Bearer")
-  TWITCH_CHANNEL,      // broadcaster username
-  TWITCH_MOD_LOGIN,    // mod account username (whose token this is)
-  DISCORD_WEBHOOK_URL,
-  DASHBOARD_PASSWORD,
-  SESSION_SECRET = 'changeme-random-string',
-  PORT           = 3000,
-  SCAN_INTERVAL_SECONDS = 120,   // chatters rescanned this often
-  FOLLOWER_INTERVAL_SECONDS = 600 // followers rescanned every 10 min
-} = process.env;
-
-const BOT_PATTERN = /^[a-z]{5}\d{2}$/i;
+const CHATTER_INTERVAL  = 2 * 60 * 1000;   // 2 min
+const FOLLOWER_INTERVAL = 10 * 60 * 1000;  // 10 min
+const BOT_PATTERN       = /^[a-z]{5}\d{2}$/i;
 
 function isSuspect(login, createdAt) {
   const d = new Date(createdAt);
   return BOT_PATTERN.test(login) && d.getFullYear() === 2024 && d.getMonth() === 4;
 }
 
-// ─── Shared state ─────────────────────────────────────────────────────────────
+// ─── In-memory state ─────────────────────────────────────────────────────────
 const state = {
-  accounts:      new Map(),   // login → account object
-  unfollows:     [],          // [{login, followedAt, unfollowedAt}] — last 200
-  alerted:       new Set(),   // logins already Discord-alerted
-  lastScan:      null,
+  accounts: new Map(),
+  unfollows: [],
+  alerted: new Set(),
+  lastScan: null,
   lastFollowerScan: null,
-  scanCount:     0,
-  running:       false,
-  log:           [],          // last 100 log lines
-  error:         null
+  scanCount: 0,
+  running: false,
+  log: [],
+  error: null,
 };
 
-function addLog(msg, type = 'info') {
-  const entry = { time: new Date().toISOString(), msg, type };
-  state.log.unshift(entry);
+function addLog(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  console.log(line);
+  state.log.unshift(line);
   if (state.log.length > 100) state.log.pop();
-  console.log(`[${entry.time}] [${type.toUpperCase()}] ${msg}`);
 }
 
-// ─── Twitch helpers ───────────────────────────────────────────────────────────
-const twitchHeaders = () => ({
-  'Client-ID': TWITCH_CLIENT_ID,
-  'Authorization': `Bearer ${TWITCH_TOKEN}`
-});
+// ─── Turso DB ────────────────────────────────────────────────────────────────
+let db = null;
 
-async function resolveUserIds(logins) {
-  const chunks = [];
-  for (let i = 0; i < logins.length; i += 100) chunks.push(logins.slice(i, i + 100));
+async function initDb() {
+  if (!TURSO_URL || !TURSO_AUTH_TOKEN) {
+    addLog('⚠️  Turso env vars not set — running without persistent storage');
+    return;
+  }
+  try {
+    db = createClient({ url: TURSO_URL, authToken: TURSO_AUTH_TOKEN });
+    await db.execute(`CREATE TABLE IF NOT EXISTS unfollows (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      login     TEXT NOT NULL,
+      followed_at  TEXT,
+      unfollowed_at TEXT NOT NULL,
+      suspect   INTEGER NOT NULL DEFAULT 0
+    )`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS bans (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      login     TEXT NOT NULL,
+      banned_at TEXT NOT NULL
+    )`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS alerted (
+      login TEXT PRIMARY KEY
+    )`);
+    addLog('✅ Turso DB connected');
+
+    // Load persisted alerted set
+    const alertedRows = await db.execute('SELECT login FROM alerted');
+    for (const row of alertedRows.rows) state.alerted.add(row.login);
+    addLog(`  Loaded ${state.alerted.size} alerted logins from DB`);
+
+    // Load last 200 unfollows
+    const unfollowRows = await db.execute(
+      'SELECT login, followed_at, unfollowed_at, suspect FROM unfollows ORDER BY id DESC LIMIT 200'
+    );
+    state.unfollows = unfollowRows.rows.map(r => ({
+      login: r.login,
+      followedAt: r.followed_at,
+      unfollowedAt: r.unfollowed_at,
+      suspect: !!r.suspect,
+    }));
+    addLog(`  Loaded ${state.unfollows.length} unfollow records from DB`);
+  } catch (err) {
+    addLog(`❌ Turso init error: ${err.message}`);
+    db = null;
+  }
+}
+
+async function dbAddAlerted(login) {
+  if (!db) return;
+  try { await db.execute({ sql: 'INSERT OR IGNORE INTO alerted (login) VALUES (?)', args: [login] }); }
+  catch (e) { addLog(`DB alerted write error: ${e.message}`); }
+}
+
+async function dbAddUnfollow(entry) {
+  if (!db) return;
+  try {
+    await db.execute({
+      sql: 'INSERT INTO unfollows (login, followed_at, unfollowed_at, suspect) VALUES (?,?,?,?)',
+      args: [entry.login, entry.followedAt || null, entry.unfollowedAt, entry.suspect ? 1 : 0],
+    });
+  } catch (e) { addLog(`DB unfollow write error: ${e.message}`); }
+}
+
+async function dbAddBan(login) {
+  if (!db) return;
+  try {
+    await db.execute({
+      sql: 'INSERT INTO bans (login, banned_at) VALUES (?,?)',
+      args: [login, new Date().toISOString()],
+    });
+  } catch (e) { addLog(`DB ban write error: ${e.message}`); }
+}
+
+// ─── Twitch API helpers ──────────────────────────────────────────────────────
+async function twitchGet(url) {
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${TWITCH_TOKEN}`, 'Client-Id': TWITCH_CLIENT_ID },
+  });
+  if (!res.ok) throw new Error(`Twitch ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function getUserId(login) {
+  const data = await twitchGet(`https://api.twitch.tv/helix/users?login=${login}`);
+  return data.data[0]?.id;
+}
+
+async function getBroadcasterId() {
+  const data = await twitchGet(`https://api.twitch.tv/helix/users?login=${TWITCH_CHANNEL}`);
+  return data.data[0]?.id;
+}
+
+async function getModeratorId() {
+  const data = await twitchGet('https://api.twitch.tv/helix/users');
+  return data.data[0]?.id;
+}
+
+// ─── Scan chatters ────────────────────────────────────────────────────────────
+async function scanChatters(broadcasterId, moderatorId) {
+  const logins = new Set();
+  let cursor = null;
+  do {
+    const url = `https://api.twitch.tv/helix/chat/chatters?broadcaster_id=${broadcasterId}&moderator_id=${moderatorId}&first=1000` + (cursor ? `&after=${cursor}` : '');
+    const data = await twitchGet(url);
+    for (const u of data.data) logins.add(u.user_login.toLowerCase());
+    cursor = data.pagination?.cursor;
+  } while (cursor);
+  return logins;
+}
+
+// ─── Scan followers ───────────────────────────────────────────────────────────
+async function scanFollowers(broadcasterId) {
+  const map = new Map(); // login → followed_at
+  let cursor = null;
+  do {
+    const url = `https://api.twitch.tv/helix/channels/followers?broadcaster_id=${broadcasterId}&first=100` + (cursor ? `&after=${cursor}` : '');
+    const data = await twitchGet(url);
+    for (const u of data.data) map.set(u.user_login.toLowerCase(), u.followed_at);
+    cursor = data.pagination?.cursor;
+  } while (cursor);
+  return map;
+}
+
+// ─── Enrich user data ─────────────────────────────────────────────────────────
+async function enrichUsers(logins) {
   const results = [];
+  const chunks = [];
+  const arr = [...logins];
+  for (let i = 0; i < arr.length; i += 100) chunks.push(arr.slice(i, i + 100));
   for (const chunk of chunks) {
     const qs = chunk.map(l => `login=${encodeURIComponent(l)}`).join('&');
-    const r = await fetch(`https://api.twitch.tv/helix/users?${qs}`, { headers: twitchHeaders() });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.message || 'User lookup failed');
-    results.push(...d.data);
+    const data = await twitchGet(`https://api.twitch.tv/helix/users?${qs}`);
+    results.push(...data.data);
   }
   return results;
 }
 
-async function fetchChatters(broadcasterId, modId) {
-  let cursor = null, chatters = [];
-  do {
-    let url = `https://api.twitch.tv/helix/chat/chatters?broadcaster_id=${broadcasterId}&moderator_id=${modId}&first=1000`;
-    if (cursor) url += `&after=${cursor}`;
-    const r = await fetch(url, { headers: twitchHeaders() });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.message || 'Chatters fetch failed — check moderator:read:chatters scope');
-    chatters = chatters.concat(d.data);
-    cursor = d.pagination?.cursor;
-  } while (cursor);
-  return chatters;
-}
-
-async function fetchFollowers(broadcasterId, modId) {
-  let cursor = null, followers = [];
-  do {
-    let url = `https://api.twitch.tv/helix/channels/followers?broadcaster_id=${broadcasterId}&moderator_id=${modId}&first=100`;
-    if (cursor) url += `&after=${cursor}`;
-    const r = await fetch(url, { headers: twitchHeaders() });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.message || 'Followers fetch failed — check moderator:read:followers scope');
-    followers = followers.concat(d.data);
-    cursor = d.pagination?.cursor;
-  } while (cursor);
-  addLog(`Follower scan complete — ${followers.length.toLocaleString()} followers fetched`);
-  // Returns array of {user_login, followed_at}
-  return followers;
-}
-
-// ─── Discord ──────────────────────────────────────────────────────────────────
-async function sendDiscordAlert(newBots) {
-  if (!DISCORD_WEBHOOK_URL) return;
-  const inChat     = newBots.filter(v => v.inChat);
-  const followOnly = newBots.filter(v => !v.inChat);
-  const summary    = inChat.length && followOnly.length
-    ? `${inChat.length} in chat, ${followOnly.length} follower-only`
-    : inChat.length ? 'all in chat' : 'all follower-only';
-  const lines = newBots.map(v => {
-    const src     = v.inChat ? '💬 in chat' : '👤 follower only';
-    const created = new Date(v.created).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    return `• **[${v.login}](https://twitch.tv/${v.login})** — created ${created} · ${src}`;
-  }).join('\n');
-
-  const payload = {
-    username:   'Twitch Bot Monitor',
-    avatar_url: 'https://static.twitchusercontent.com/assets/favicon-32-e29e246c157142c94346.png',
-    embeds: [{
-      title:       `⚠️ ${newBots.length} suspected bot${newBots.length !== 1 ? 's' : ''} detected in ${TWITCH_CHANNEL}`,
-      description: `Pattern: 5 letters + 2 numbers, created May 2024 · ${summary}\n\n${lines}`,
-      color:       0xf59e0b,
-      url:         'https://twitch-bot-monitor.onrender.com',
-      fields: [{
-        name:  '🔨 Take action',
-        value: '[Open dashboard → Suspected bots](https://twitch-bot-monitor.onrender.com)',
-        inline: false
-      }],
-      timestamp:   new Date().toISOString(),
-      footer:      { text: 'Twitch Bot Monitor · render.com' }
-    }]
-  };
-
-  try {
-    const r = await fetch(DISCORD_WEBHOOK_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload)
-    });
-    if (!r.ok) addLog(`Discord alert failed: HTTP ${r.status}`, 'warn');
-    else       addLog(`Discord alert sent for ${newBots.length} bot${newBots.length !== 1 ? 's' : ''}.`);
-  } catch (e) {
-    addLog(`Discord error: ${e.message}`, 'warn');
-  }
-}
-
 // ─── Main scan loop ───────────────────────────────────────────────────────────
+let broadcasterId = null;
+let moderatorId = null;
+let lastFollowerMap = new Map();
+
 async function runScan() {
+  if (!broadcasterId) {
+    broadcasterId = await getBroadcasterId();
+    moderatorId = await getModeratorId();
+    addLog(`Broadcaster ID: ${broadcasterId}, Moderator ID: ${moderatorId}`);
+  }
+
+  state.scanCount++;
+  const scanNum = state.scanCount;
+
+  // ── Chatters ──
+  const chatterLogins = await scanChatters(broadcasterId, moderatorId);
+
+  // ── Followers ──
+  let followerMap = lastFollowerMap;
+  const now = Date.now();
+  const doFollowers = !state.lastFollowerScan || (now - new Date(state.lastFollowerScan).getTime()) >= FOLLOWER_INTERVAL;
+  if (doFollowers) {
+    followerMap = await scanFollowers(broadcasterId);
+    // Detect unfollows
+    if (lastFollowerMap.size > 0) {
+      for (const [login, followedAt] of lastFollowerMap) {
+        if (!followerMap.has(login)) {
+          const acct = state.accounts.get(login);
+          const entry = {
+            login,
+            followedAt,
+            unfollowedAt: new Date().toISOString(),
+            suspect: acct ? acct.suspect : BOT_PATTERN.test(login),
+          };
+          state.unfollows.unshift(entry);
+          if (state.unfollows.length > 200) state.unfollows.pop();
+          await dbAddUnfollow(entry);
+        }
+      }
+    }
+    lastFollowerMap = followerMap;
+    state.lastFollowerScan = new Date().toISOString();
+  }
+
+  // ── Merge all logins to check ──
+  const allLogins = new Set([...chatterLogins, ...followerMap.keys()]);
+
+  // ── Enrich new logins ──
+  const newLogins = [...allLogins].filter(l => !state.accounts.has(l));
+  if (newLogins.length > 0) {
+    const users = await enrichUsers(newLogins);
+    for (const u of users) {
+      const login = u.login.toLowerCase();
+      const followedAt = followerMap.get(login) || null;
+      state.accounts.set(login, {
+        login,
+        displayName: u.display_name,
+        createdAt: u.created_at,
+        suspect: isSuspect(login, u.created_at),
+        isChatter: chatterLogins.has(login),
+        isFollower: followerMap.has(login),
+        followedAt,
+      });
+    }
+  }
+
+  // ── Update chatter/follower flags for existing accounts ──
+  for (const [login, acct] of state.accounts) {
+    acct.isChatter = chatterLogins.has(login);
+    const wasFollower = acct.isFollower;
+    acct.isFollower = followerMap.has(login);
+    if (acct.isFollower && followerMap.has(login)) {
+      acct.followedAt = followerMap.get(login);
+    }
+    if (!acct.isChatter && !acct.isFollower) {
+      state.accounts.delete(login);
+    }
+  }
+
+  // ── Discord alert for new suspects ──
+  const newBots = [];
+  for (const [login, acct] of state.accounts) {
+    if (acct.suspect && !state.alerted.has(login)) {
+      newBots.push(acct);
+    }
+  }
+
+  if (newBots.length > 0 && DISCORD_WEBHOOK) {
+    const desc = newBots.map(b =>
+      `**${b.login}** — created ${b.createdAt ? b.createdAt.slice(0,10) : '?'}`
+    ).join('\n');
+    await fetch(DISCORD_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'Twitch Bot Monitor',
+        embeds: [{
+          title: `⚠️ ${newBots.length} suspected bot(s) detected in ${TWITCH_CHANNEL}`,
+          description: desc,
+          url: DASHBOARD_URL,
+          fields: [{ name: '🔨 Take action', value: `[Open dashboard →](${DASHBOARD_URL})` }],
+          color: 0xf59e0b,
+          timestamp: new Date().toISOString(),
+          footer: { text: 'Twitch Bot Monitor · render.com' },
+        }],
+      }),
+    });
+    for (const b of newBots) {
+      state.alerted.add(b.login);
+      await dbAddAlerted(b.login);
+    }
+  }
+
+  state.lastScan = new Date().toISOString();
+  state.error = null;
+  addLog(`Scan #${scanNum} — ${chatterLogins.size} chatters, ${followerMap.size} followers, ${[...state.accounts.values()].filter(a=>a.suspect).length} suspected bots total`);
+}
+
+async function startScanner() {
   if (state.running) return;
   state.running = true;
-  state.error   = null;
 
-  try {
-    // Resolve IDs
-    const users    = await resolveUserIds([TWITCH_CHANNEL, TWITCH_MOD_LOGIN].filter(Boolean));
-    const broadcaster = users.find(u => u.login.toLowerCase() === TWITCH_CHANNEL.toLowerCase());
-    const mod         = users.find(u => u.login.toLowerCase() === (TWITCH_MOD_LOGIN || TWITCH_CHANNEL).toLowerCase());
-    if (!broadcaster) throw new Error(`Channel "${TWITCH_CHANNEL}" not found`);
-    const broadcasterId = broadcaster.id;
-    const modId         = mod ? mod.id : broadcasterId;
-
-    // Chatters
-    const chatters      = await fetchChatters(broadcasterId, modId);
-    const chatterLogins = new Set(chatters.map(c => c.user_login));
-
-    // Followers (every FOLLOWER_INTERVAL_SECONDS)
-    const now         = Date.now();
-    const doFollowers = !state.lastFollowerScan ||
-      (now - state.lastFollowerScan) > FOLLOWER_INTERVAL_SECONDS * 1000;
-
-    // Map of login → followed_at for this scan
-    let followerLogins   = new Set();
-    let followerDateMap  = new Map(); // login → followed_at ISO string
-    if (doFollowers) {
-      const followers = await fetchFollowers(broadcasterId, modId);
-      followers.forEach(f => {
-        followerLogins.add(f.user_login);
-        followerDateMap.set(f.user_login, f.followed_at);
-      });
-      state.lastFollowerScan = now;
-
-      // Detect unfollows — anyone who WAS a follower but isn't anymore
-      for (const [login, acc] of state.accounts) {
-        if (acc.isFollower && !followerLogins.has(login)) {
-          state.unfollows.unshift({
-            login,
-            followedAt:   acc.followedAt   || null,
-            unfollowedAt: new Date().toISOString(),
-            suspect:      acc.suspect
-          });
-          addLog(`👋 ${login} unfollowed`, 'info');
-        }
-      }
-      if (state.unfollows.length > 200) state.unfollows = state.unfollows.slice(0, 200);
-    } else {
-      for (const [login, acc] of state.accounts) {
-        if (acc.isFollower) {
-          followerLogins.add(login);
-          if (acc.followedAt) followerDateMap.set(login, acc.followedAt);
-        }
-      }
+  const loop = async () => {
+    try { await runScan(); }
+    catch (err) {
+      state.error = err.message;
+      addLog(`❌ Scan error: ${err.message}`);
     }
-
-    // Combined unique logins — only fetch details for ones we haven't seen
-    const allLogins = new Set([...chatterLogins, ...followerLogins]);
-    const toFetch   = [...allLogins].filter(l => !state.accounts.has(l));
-
-    if (toFetch.length > 0) {
-      const details = await resolveUserIds(toFetch);
-      const nowMs   = Date.now();
-      details.forEach(u => {
-        state.accounts.set(u.login, {
-          login:      u.login,
-          created:    u.created_at,
-          days:       Math.floor((nowMs - new Date(u.created_at)) / 86400000),
-          suspect:    isSuspect(u.login, u.created_at),
-          inChat:     chatterLogins.has(u.login),
-          isFollower: followerLogins.has(u.login),
-          followedAt: followerDateMap.get(u.login) || null,
-          firstSeen:  new Date().toISOString()
-        });
-      });
-    }
-
-    // Update status for existing accounts
-    for (const [login, acc] of state.accounts) {
-      if (!toFetch.includes(login)) {
-        acc.inChat = chatterLogins.has(login);
-        if (doFollowers) {
-          acc.isFollower = followerLogins.has(login);
-          // Update followedAt if we have it (may have been null before)
-          if (followerDateMap.has(login)) acc.followedAt = followerDateMap.get(login);
-        }
-      }
-    }
-
-    // Remove accounts no longer in either list
-    if (doFollowers) {
-      for (const [login] of state.accounts) {
-        if (!allLogins.has(login)) state.accounts.delete(login);
-      }
-    } else {
-      for (const [login, acc] of state.accounts) {
-        if (!chatterLogins.has(login) && !acc.isFollower) state.accounts.delete(login);
-      }
-    }
-
-    // Find new bots not yet alerted
-    const newBots = [...state.accounts.values()]
-      .filter(v => v.suspect && toFetch.includes(v.login) && !state.alerted.has(v.login));
-    newBots.forEach(v => state.alerted.add(v.login));
-
-    state.scanCount++;
-    state.lastScan = new Date().toISOString();
-
-    const suspects = [...state.accounts.values()].filter(v => v.suspect).length;
-    if (newBots.length > 0) {
-      addLog(`⚠ ${newBots.length} new bot${newBots.length !== 1 ? 's' : ''} detected: ${newBots.map(v => v.login).join(', ')}`, 'warn');
-      await sendDiscordAlert(newBots);
-    } else {
-      addLog(`Scan #${state.scanCount} — ${chatterLogins.size} chatters, ${followerLogins.size.toLocaleString()} followers, ${suspects} suspected bots total`);
-    }
-
-  } catch (e) {
-    state.error = e.message;
-    addLog(`Scan error: ${e.message}`, 'error');
-  }
-
-  state.running = false;
+    setTimeout(loop, CHATTER_INTERVAL);
+  };
+  loop();
 }
 
-// Start scan loop
-function startLoop() {
-  addLog('Monitor starting…');
-  runScan();
-  setInterval(runScan, SCAN_INTERVAL_SECONDS * 1000);
-}
-
-// ─── Express dashboard ────────────────────────────────────────────────────────
+// ─── Express ──────────────────────────────────────────────────────────────────
 const app = express();
-
-app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(session({
-  secret:            SESSION_SECRET,
-  resave:            false,
+  secret: SESSION_SECRET,
+  resave: false,
   saveUninitialized: false,
-  cookie:            { maxAge: 24 * 60 * 60 * 1000 } // 24h
+  cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 },
 }));
-app.use(express.static(path.join(__dirname, 'public')));
 
 function requireAuth(req, res, next) {
   if (req.session.authed) return next();
-  res.redirect('/login');
+  res.status(401).json({ error: 'Unauthorized' });
 }
 
-// Login page
 app.get('/login', (req, res) => {
-  res.send(loginPage());
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login — Twitch Bot Monitor</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0e0e10;color:#efeff1;font-family:'Inter',system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+  .card{background:#18181b;border:1px solid #2d2d35;border-radius:12px;padding:40px;width:340px}
+  h1{font-size:1.2rem;font-weight:600;margin-bottom:24px;color:#a970ff}
+  input{width:100%;padding:10px 14px;background:#0e0e10;border:1px solid #3a3a4a;border-radius:8px;color:#efeff1;font-size:14px;outline:none;margin-bottom:16px}
+  input:focus{border-color:#a970ff}
+  button{width:100%;padding:11px;background:#a970ff;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+  button:hover{background:#bf93ff}
+  .err{color:#f04747;font-size:13px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🤖 Twitch Bot Monitor</h1>
+  ${req.query.error ? '<p class="err">Incorrect password</p>' : ''}
+  <form method="POST" action="/login">
+    <input type="password" name="password" placeholder="Password" autofocus>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body>
+</html>`);
 });
+
 app.post('/login', (req, res) => {
-  if (req.body.password === DASHBOARD_PASSWORD) {
+  if (req.body.password === DASHBOARD_PASS) {
     req.session.authed = true;
     res.redirect('/');
   } else {
-    res.send(loginPage('Incorrect password.'));
+    res.redirect('/login?error=1');
   }
 });
-app.get('/logout', (req, res) => {
+
+app.post('/logout', (req, res) => {
   req.session.destroy();
   res.redirect('/login');
 });
 
-// Dashboard
-app.get('/', requireAuth, (req, res) => {
-  res.send(dashboardPage());
-});
-
-// API — returns current state as JSON for the dashboard to poll
+// ─── API ──────────────────────────────────────────────────────────────────────
 app.get('/api/state', requireAuth, (req, res) => {
-  const accounts = [...state.accounts.values()].sort((a, b) => {
-    if (a.suspect && !b.suspect) return -1;
-    if (!a.suspect && b.suspect) return 1;
-    if (a.inChat && !b.inChat) return -1;
-    if (!a.inChat && b.inChat) return 1;
-    return new Date(a.created) - new Date(b.created);
-  });
-  const suspects = accounts.filter(v => v.suspect);
+  const accounts = [...state.accounts.values()];
   res.json({
-    scanCount:    state.scanCount,
-    lastScan:     state.lastScan,
-    running:      state.running,
-    error:        state.error,
-    log:          state.log.slice(0, 30),
-    stats: {
-      total:          accounts.length,
-      chatters:       accounts.filter(v => v.inChat).length,
-      followers:      accounts.filter(v => v.isFollower).length,
-      suspects:       suspects.length,
-      suspectsChat:   suspects.filter(v => v.inChat).length,
-      suspectsFollow: suspects.filter(v => !v.inChat).length,
-      newAccounts:    accounts.filter(v => v.days < 30).length,
-      established:    accounts.filter(v => v.days >= 365).length,
-      unfollows:      state.unfollows.length
-    },
     accounts,
-    unfollows: state.unfollows
+    unfollows: state.unfollows,
+    lastScan: state.lastScan,
+    lastFollowerScan: state.lastFollowerScan,
+    scanCount: state.scanCount,
+    running: state.running,
+    log: state.log,
+    error: state.error,
   });
 });
 
-// API — ban a user
 app.post('/api/ban', requireAuth, async (req, res) => {
   const { login } = req.body;
   if (!login) return res.status(400).json({ error: 'Missing login' });
-
   try {
-    // Resolve broadcaster + mod IDs
-    const logins = [TWITCH_CHANNEL, TWITCH_MOD_LOGIN].filter(Boolean);
-    const users  = await resolveUserIds(logins);
-    const broadcaster = users.find(u => u.login.toLowerCase() === TWITCH_CHANNEL.toLowerCase());
-    const mod         = users.find(u => u.login.toLowerCase() === (TWITCH_MOD_LOGIN || TWITCH_CHANNEL).toLowerCase());
-    if (!broadcaster) throw new Error('Broadcaster not found');
-    const broadcasterId = broadcaster.id;
-    const modId         = mod ? mod.id : broadcasterId;
+    const bId = broadcasterId || await getBroadcasterId();
+    const mId = moderatorId  || await getModeratorId();
+    const userData = await twitchGet(`https://api.twitch.tv/helix/users?login=${encodeURIComponent(login)}`);
+    const targetId = userData.data[0]?.id;
+    if (!targetId) return res.status(404).json({ error: 'User not found' });
 
-    // Resolve target user ID
-    const targets = await resolveUserIds([login]);
-    if (!targets.length) return res.status(404).json({ error: `User "${login}" not found` });
-    const targetId = targets[0].id;
-
-    // Issue ban
-    const r = await fetch(
-      `https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${broadcasterId}&moderator_id=${modId}`,
-      {
-        method:  'POST',
-        headers: { ...twitchHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          data: {
-            user_id: targetId,
-            reason:  'If you are not a bot, appeal and you\'ll be unbanned.'
-          }
-        })
-      }
-    );
-
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.message || `Ban failed (HTTP ${r.status})`);
-
-    // Remove from state so they vanish from the table
+    const banRes = await fetch(`https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${bId}&moderator_id=${mId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TWITCH_TOKEN}`,
+        'Client-Id': TWITCH_CLIENT_ID,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ data: { user_id: targetId, reason: "If you are not a bot, appeal and you'll be unbanned." } }),
+    });
+    if (!banRes.ok) {
+      const txt = await banRes.text();
+      return res.status(banRes.status).json({ error: txt });
+    }
     state.accounts.delete(login);
-    addLog(`🔨 Banned ${login}`, 'warn');
+    await dbAddBan(login);
+    addLog(`🔨 Banned ${login}`);
     res.json({ ok: true });
-
-  } catch (e) {
-    addLog(`Ban error for ${login}: ${e.message}`, 'error');
-    res.status(500).json({ error: e.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ─── HTML pages (inline) ──────────────────────────────────────────────────────
-function loginPage(error = '') {
-  return `<!DOCTYPE html>
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  if (!req.session.authed) return res.redirect('/login');
+  res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Bot Monitor — Login</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{background:#0e0e10;color:#efeff1;font-family:'Inter',system-ui,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
-.box{background:#18181b;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:2.5rem;width:100%;max-width:360px}
-.logo{display:flex;align-items:center;gap:10px;margin-bottom:2rem}
-.logo svg{color:#9147ff}
-.logo-title{font-size:16px;font-weight:600}
-.logo-sub{font-size:12px;color:#6b6b7a}
-label{font-size:12px;color:#adadb8;font-weight:500;display:block;margin-bottom:5px}
-input{width:100%;background:#1f1f23;border:1px solid rgba(255,255,255,0.14);border-radius:8px;color:#efeff1;font-family:inherit;font-size:14px;padding:9px 12px;outline:none;transition:border-color .15s}
-input:focus{border-color:#9147ff;box-shadow:0 0 0 3px rgba(145,71,255,0.12)}
-.btn{width:100%;background:#9147ff;color:#fff;border:none;border-radius:8px;padding:10px;font-family:inherit;font-size:14px;font-weight:500;cursor:pointer;margin-top:1.25rem}
-.btn:hover{background:#772ce8}
-.error{background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.25);border-radius:8px;color:#f87171;font-size:13px;padding:9px 12px;margin-bottom:1rem}
-</style>
-</head>
-<body>
-<div class="box">
-  <div class="logo">
-    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>
-    <div><div class="logo-title">Bot Monitor</div><div class="logo-sub">Dashboard login</div></div>
-  </div>
-  ${error ? `<div class="error">${error}</div>` : ''}
-  <form method="POST" action="/login">
-    <label for="pw">Password</label>
-    <input type="password" id="pw" name="password" autofocus placeholder="Enter dashboard password" />
-    <button class="btn" type="submit">Sign in</button>
-  </form>
-</div>
-</body>
-</html>`;
-}
-
-function dashboardPage() {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Twitch Bot Monitor</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0e0e10;--surface:#18181b;--surface2:#1f1f23;--surface3:#26262c;
-  --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.14);
-  --purple:#9147ff;--purple-d:#772ce8;--purple-faint:rgba(145,71,255,0.12);
-  --text:#efeff1;--muted:#adadb8;--faint:#6b6b7a;
-  --amber:#f59e0b;--amber-bg:rgba(245,158,11,0.12);
-  --green:#22c55e;--green-bg:rgba(34,197,94,0.12);
-  --red:#f87171;--red-bg:rgba(248,113,113,0.12);
-  --blue:#60a5fa;--blue-bg:rgba(96,165,250,0.12);
-  --radius:8px;--radius-lg:12px;
-}
-body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.5;min-height:100vh;padding:0 0 4rem}
-.header{background:var(--surface);border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;gap:12px;height:56px;position:sticky;top:0;z-index:10}
-.header svg{color:var(--purple)}
-.header-title{font-size:15px;font-weight:600}
-.header-sub{font-size:12px;color:var(--muted)}
-.header-spacer{flex:1}
-.pill{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border2);border-radius:100px;padding:5px 14px;font-size:12px;color:var(--muted)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
-.dot.live{background:var(--green);box-shadow:0 0 0 3px rgba(34,197,94,0.25);animation:pulse 1.8s ease-in-out infinite}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(34,197,94,0.25)}50%{box-shadow:0 0 0 6px rgba(34,197,94,0.08)}}
-.logout{font-size:12px;color:var(--faint);text-decoration:none;margin-left:10px}
-.logout:hover{color:var(--red)}
-.page{max-width:960px;margin:0 auto;padding:2rem}
-.error-banner{background:var(--red-bg);border:1px solid rgba(248,113,113,0.25);border-radius:var(--radius);color:var(--red);font-size:13px;padding:10px 14px;margin-bottom:1rem;display:none}
-.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px}
-.stats-grid2{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}
-.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px}
-.stat-label{font-size:11px;color:var(--faint);margin-bottom:4px}
-.stat-val{font-size:22px;font-weight:600}
-.purple{color:var(--purple)}.blue{color:var(--blue)}.orange{color:var(--amber)}.red{color:var(--red)}.green{color:var(--green)}
-.section-title{font-size:11px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.75rem;padding-bottom:6px;border-bottom:1px solid var(--border)}
-.filter-row{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
-.chip{font-size:12px;padding:4px 12px;border-radius:100px;border:1px solid var(--border2);background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .12s}
-.chip:hover{border-color:var(--purple);color:var(--text)}
-.chip.active{background:var(--purple);color:#fff;border-color:var(--purple)}
-.search-wrap{position:relative;margin-bottom:12px}
-.search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--faint);pointer-events:none}
-.search-wrap input{padding-left:34px;width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:13px;padding:8px 12px 8px 34px;outline:none}
-.search-wrap input:focus{border-color:var(--purple);box-shadow:0 0 0 3px var(--purple-faint)}
-.table-wrap{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.table-scroll{max-height:420px;overflow-y:auto}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{background:var(--surface2);color:var(--faint);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:9px 14px;text-align:left;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
-tbody td{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
-tbody tr:last-child td{border-bottom:none}
-tbody tr:hover td{background:var(--surface2)}
-tbody tr.suspected td{background:rgba(245,158,11,0.05)}
-tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
-.account-link{color:var(--blue);text-decoration:none;font-weight:500}
-.account-link:hover{text-decoration:underline}
-.account-link.bot{color:var(--amber)}
-.badge{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:500;border-radius:100px;padding:2px 8px;margin-right:3px;white-space:nowrap}
-.badge-bot{background:var(--amber-bg);color:var(--amber);border:1px solid rgba(245,158,11,0.3)}
-.badge-chat{background:var(--purple-faint);color:#c4a0ff;border:1px solid rgba(145,71,255,0.25)}
-.badge-follow{background:var(--surface3);color:var(--muted);border:1px solid var(--border2)}
-.badge-new{background:var(--red-bg);color:var(--red)}
-.badge-young{background:var(--amber-bg);color:var(--amber)}
-.badge-est{background:var(--green-bg);color:var(--green)}
-.log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.log-title{font-size:11px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
-.log-list{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;max-height:160px;overflow-y:auto;font-size:12px;font-family:'Menlo','Consolas',monospace}
-.log-entry{padding:2px 0;border-bottom:1px solid var(--border);color:var(--muted)}
-.log-entry:last-child{border-bottom:none}
-.log-entry.warn,.log-entry.error{color:var(--amber)}
-.log-entry.error{color:var(--red)}
-.empty{text-align:center;color:var(--faint);padding:2.5rem;font-size:13px}
-.ban-btn{background:transparent;border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:6px;padding:2px 8px;font-size:11px;font-family:inherit;cursor:pointer;transition:all .12s;white-space:nowrap}
-.ban-btn:hover{background:var(--red-bg);border-color:var(--red)}
-.ban-btn:disabled{opacity:0.4;cursor:default}
-.ban-btn.done{border-color:var(--faint);color:var(--faint)}
-@media(max-width:600px){.stats-grid,.stats-grid2{grid-template-columns:repeat(2,1fr)}.page{padding:1rem}.header{padding:0 1rem}}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0e0e10;color:#efeff1;font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100vh}
+  header{background:#18181b;border-bottom:1px solid #2d2d35;padding:14px 24px;display:flex;align-items:center;gap:16px}
+  header h1{font-size:1rem;font-weight:700;color:#a970ff;flex:1}
+  .badge{background:#2d2d35;padding:3px 10px;border-radius:20px;font-size:12px;color:#adadb8}
+  .badge.ok{background:#1a3a1a;color:#4caf50}
+  .badge.err{background:#3a1a1a;color:#f04747}
+  .logout{background:none;border:1px solid #3a3a4a;color:#adadb8;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+  .logout:hover{border-color:#a970ff;color:#efeff1}
+  .main{padding:24px;max-width:1400px;margin:0 auto}
+  .stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+  .stat{background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:14px 20px;flex:1;min-width:140px}
+  .stat-val{font-size:1.6rem;font-weight:700;color:#a970ff}
+  .stat-lbl{font-size:11px;color:#adadb8;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+  .tabs{display:flex;gap:2px;margin-bottom:16px;border-bottom:1px solid #2d2d35}
+  .tab{padding:8px 20px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px;color:#adadb8;user-select:none}
+  .tab.active{color:#a970ff;border-bottom-color:#a970ff}
+  .panel{display:none}.panel.active{display:block}
+  .filters{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+  .filters select,.filters input{background:#18181b;border:1px solid #2d2d35;color:#efeff1;padding:7px 12px;border-radius:7px;font-size:13px;outline:none}
+  .filters select:focus,.filters input:focus{border-color:#a970ff}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #1e1e24}
+  th{background:#18181b;color:#adadb8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;z-index:1;white-space:nowrap}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:hover{color:#efeff1}
+  .sort-icon{display:inline-block;margin-left:4px;opacity:.4;font-style:normal}
+  th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1;color:#a970ff}
+  tr:hover td{background:#18181b55}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+  .pill.bot{background:#3a1a1a;color:#f04747}
+  .pill.clean{background:#1a1a3a;color:#5865f2}
+  .pill.chatter{background:#1a3a3a;color:#00c8ff}
+  .pill.follower{background:#1a3a1a;color:#4caf50}
+  .pill.both{background:#2d1a3a;color:#a970ff}
+  .ban-btn{background:#f04747;border:none;color:#fff;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
+  .ban-btn:hover{background:#ff6060}
+  .ban-btn:disabled{background:#444;cursor:not-allowed}
+  .tbl-wrap{overflow-x:auto;border-radius:10px;border:1px solid #2d2d35}
+  .log-box{background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:16px;max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.7;color:#adadb8}
+  .log-box .err{color:#f04747}
+  #toast{position:fixed;bottom:20px;right:20px;background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:12px 18px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:99}
+  #toast.show{opacity:1}
+  .empty{text-align:center;padding:40px;color:#adadb8}
 </style>
 </head>
 <body>
-<header class="header">
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>
-  <div><div class="header-title">Bot Monitor</div><div class="header-sub" id="channel-label">Loading…</div></div>
-  <div class="header-spacer"></div>
-  <div class="pill"><div class="dot live" id="pulse-dot"></div><span id="pill-text">Scanning…</span></div>
-  <a href="/logout" class="logout">Sign out</a>
+<header>
+  <h1>🤖 Twitch Bot Monitor</h1>
+  <span id="statusBadge" class="badge">Connecting…</span>
+  <span id="scanInfo" class="badge" style="font-size:11px"></span>
+  <button class="logout" onclick="fetch('/logout',{method:'POST'}).then(()=>location='/login')">Sign out</button>
 </header>
-
-<main class="page">
-  <div class="error-banner" id="error-banner"></div>
-
-  <div class="stats-grid" style="margin-bottom:10px">
-    <div class="stat"><div class="stat-label">Live chatters</div><div class="stat-val purple" id="s-chatters">—</div></div>
-    <div class="stat"><div class="stat-label">Followers scanned</div><div class="stat-val blue" id="s-followers">—</div></div>
-    <div class="stat"><div class="stat-label">Suspected bots</div><div class="stat-val orange" id="s-suspects">—</div></div>
-  </div>
-  <div class="stats-grid2" style="margin-bottom:1.5rem">
-    <div class="stat"><div class="stat-label">Bots in chat</div><div class="stat-val orange" id="s-suspects-chat">—</div></div>
-    <div class="stat"><div class="stat-label">Bots followers-only</div><div class="stat-val red" id="s-suspects-follow">—</div></div>
-    <div class="stat"><div class="stat-label">New accounts &lt;30d</div><div class="stat-val red" id="s-new">—</div></div>
-    <div class="stat"><div class="stat-label">Established 1yr+</div><div class="stat-val green" id="s-est">—</div></div>
+<div class="main">
+  <div class="stats">
+    <div class="stat"><div class="stat-val" id="sChatters">—</div><div class="stat-lbl">Chatters</div></div>
+    <div class="stat"><div class="stat-val" id="sFollowers">—</div><div class="stat-lbl">Followers</div></div>
+    <div class="stat"><div class="stat-val" id="sBots" style="color:#f04747">—</div><div class="stat-lbl">Suspected Bots</div></div>
+    <div class="stat"><div class="stat-val" id="sUnfollows">—</div><div class="stat-lbl">Unfollows Tracked</div></div>
   </div>
 
-  <div class="section-title" style="margin-bottom:.75rem">Accounts</div>
-  <div class="filter-row">
-    <button class="chip active" onclick="setFilter('all')" id="f-all">All</button>
-    <button class="chip" onclick="setFilter('suspect')" id="f-suspect">⚠ Suspected bots</button>
-    <button class="chip" onclick="setFilter('chatters')" id="f-chatters">In chat now</button>
-    <button class="chip" onclick="setFilter('followers-only')" id="f-followers-only">Followers only</button>
-    <button class="chip" onclick="setFilter('unfollowed')" id="f-unfollowed">👋 Unfollowed <span id="unfollow-badge" style="display:none;background:var(--red);color:#fff;border-radius:100px;padding:1px 6px;font-size:10px;margin-left:4px">0</span></button>
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('accounts',this)">Accounts</div>
+    <div class="tab" onclick="switchTab('unfollows',this)">Unfollows</div>
+    <div class="tab" onclick="switchTab('log',this)">Log</div>
   </div>
-  <div class="search-wrap">
-    <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input type="text" id="search" placeholder="Filter by username…" oninput="renderTable()" />
-  </div>
-  <div class="table-wrap" style="margin-bottom:1.5rem">
-    <div class="table-scroll">
-      <table id="main-table">
-        <thead id="main-thead"><tr>
-          <th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>
-          <th onclick="setSort(&quot;created&quot;)" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">&#8597;</span></th>
-          <th onclick="setSort(&quot;days&quot;)" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">&#8597;</span></th>
-          <th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>
-          <th>Source</th>
-          <th>Status</th>
-          <th></th>
-        </tr></thead>
-        <tbody id="tbody"></tbody>
+
+  <div id="panel-accounts" class="panel active">
+    <div class="filters">
+      <select id="fFilter" onchange="render()">
+        <option value="all">All accounts</option>
+        <option value="suspect">Suspected bots only</option>
+        <option value="chatter">Chatters only</option>
+        <option value="follower">Followers only</option>
+      </select>
+      <input id="fSearch" type="text" placeholder="Search username…" oninput="render()">
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead id="thead-accounts"></thead>
+        <tbody id="tbody-accounts"></tbody>
       </table>
     </div>
   </div>
 
-  <div class="section-title">Scan log</div>
-  <div class="log-list" id="log-list"><div style="color:var(--faint)">Loading…</div></div>
-</main>
+  <div id="panel-unfollows" class="panel">
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Username</th><th>Followed</th><th>Unfollowed</th><th>Status</th>
+        </tr></thead>
+        <tbody id="tbody-unfollows"></tbody>
+      </table>
+    </div>
+  </div>
 
-<style>
-.sort-arrow { font-size: 11px; color: var(--faint); margin-left: 3px; }
-th.sort-active .sort-arrow { color: var(--purple); }
-th:hover .sort-arrow { color: var(--muted); }
-</style>
+  <div id="panel-log" class="panel">
+    <div id="logBox" class="log-box"></div>
+  </div>
+</div>
+<div id="toast"></div>
 
 <script>
-let allAccounts = [];
-let allUnfollows = [];
-let activeFilter = 'all';
-let sortKey = 'created';
-let sortDir = 1; // 1 = asc, -1 = desc
+let data = {};
+let sortKey = 'suspect';
+let sortDir = -1;
 
-const SORTABLE = ['login', 'created', 'days', 'followedAt'];
+const COLS = [
+  { key: 'login',     label: 'Username',   sortable: true  },
+  { key: 'createdAt', label: 'Created',     sortable: true  },
+  { key: 'age',       label: 'Acct Age',    sortable: true  },
+  { key: 'followedAt',label: 'Following',   sortable: true  },
+  { key: 'source',    label: 'Source',      sortable: false },
+  { key: 'suspect',   label: 'Status',      sortable: false },
+  { key: 'ban',       label: '',            sortable: false },
+];
+
+function switchTab(id, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  el.classList.add('active');
+}
 
 function setSort(key) {
-  if (!SORTABLE.includes(key)) return;
-  if (sortKey === key) sortDir *= -1;
-  else { sortKey = key; sortDir = 1; }
-  updateSortArrows();
-  renderTable();
+  if (sortKey === key) sortDir = -sortDir;
+  else { sortKey = key; sortDir = -1; }
+  render();
 }
 
-function updateSortArrows() {
-  SORTABLE.forEach(k => {
-    const el = document.getElementById('arr-' + k);
-    const th = el ? el.closest('th') : null;
-    if (!el) return;
-    if (k === sortKey) {
-      el.textContent = sortDir === 1 ? '↑' : '↓';
-      th && th.classList.add('sort-active');
-    } else {
-      el.textContent = '↕';
-      th && th.classList.remove('sort-active');
-    }
+function ageDays(iso) {
+  if (!iso) return null;
+  return Math.floor((Date.now() - new Date(iso)) / 86400000);
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return iso.slice(0, 10);
+}
+
+function fmtDays(n) {
+  if (n === null) return '—';
+  if (n < 30) return n + 'd';
+  if (n < 365) return Math.floor(n/30) + 'mo';
+  return (n/365).toFixed(1) + 'y';
+}
+
+function sortAccounts(arr) {
+  return [...arr].sort((a, b) => {
+    let av, bv;
+    if (sortKey === 'login')     { av = a.login; bv = b.login; }
+    else if (sortKey === 'createdAt') { av = a.createdAt || ''; bv = b.createdAt || ''; }
+    else if (sortKey === 'age')  { av = ageDays(a.createdAt) ?? 999999; bv = ageDays(b.createdAt) ?? 999999; }
+    else if (sortKey === 'followedAt') { av = a.followedAt || ''; bv = b.followedAt || ''; }
+    else { av = a.suspect ? 1 : 0; bv = b.suspect ? 1 : 0; }
+    if (av < bv) return sortDir;
+    if (av > bv) return -sortDir;
+    return 0;
   });
 }
 
-function sortAccounts(data) {
-  return [...data].sort((a, b) => {
-    let va, vb;
-    if (sortKey === 'login') {
-      return sortDir * a.login.localeCompare(b.login);
-    }
-    if (sortKey === 'created') {
-      va = new Date(a.created).getTime();
-      vb = new Date(b.created).getTime();
-    } else if (sortKey === 'days') {
-      va = a.days ?? Infinity;
-      vb = b.days ?? Infinity;
-    } else if (sortKey === 'followedAt') {
-      // Sort by follow duration descending = longest followers first
-      va = a.followedAt ? new Date(a.followedAt).getTime() : Infinity;
-      vb = b.followedAt ? new Date(b.followedAt).getTime() : Infinity;
-    }
-    return sortDir * (va < vb ? -1 : va > vb ? 1 : 0);
-  });
-}
+function render() {
+  if (!data.accounts) return;
 
-function setFilter(f) {
-  activeFilter = f;
-  document.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
-  document.getElementById('f-' + f).classList.add('active');
-  // Swap table header for unfollowed view
-  const thead = document.getElementById('main-thead');
-  if (f === 'unfollowed') {
-    thead.innerHTML = '<tr>' +
-      '<th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Followed for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
-      '<th>Unfollowed at</th>' +
-      '<th>Status</th>' +
-      '</tr>';
-  } else {
-    thead.innerHTML = '<tr>' +
-      '<th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;created&quot;)" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;days&quot;)" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
-      '<th>Source</th>' +
-      '<th>Status</th>' +
-      '<th></th>' +
-      '</tr>';
-  }
-  updateSortArrows();
-  renderTable();
-}
+  const filter = document.getElementById('fFilter').value;
+  const search = document.getElementById('fSearch').value.toLowerCase();
 
-function ageBadge(days) {
-  if (days < 30)  return ['badge-new',   'New'];
-  if (days < 365) return ['badge-young', 'Young'];
-  return ['badge-est', 'Established'];
-}
-function formatAge(days) {
-  if (days === null || days === undefined || isNaN(days)) return '—';
-  if (days < 1)   return 'Today';
-  if (days < 30)  return days + 'd';
-  if (days < 365) return Math.floor(days / 30) + 'mo';
-  const y = Math.floor(days / 365), m = Math.floor((days % 365) / 30);
-  return m > 0 ? y + 'y ' + m + 'mo' : y + 'y';
-}
-function formatFollowDuration(followedAt) {
-  if (!followedAt) return '—';
-  const days = Math.floor((Date.now() - new Date(followedAt)) / 86400000);
-  return formatAge(days);
-}
-function formatFollowDurationBetween(followedAt, unfollowedAt) {
-  if (!followedAt || !unfollowedAt) return '—';
-  const days = Math.floor((new Date(unfollowedAt) - new Date(followedAt)) / 86400000);
-  return formatAge(days);
-}
+  // Build thead
+  const thead = document.getElementById('thead-accounts');
+  thead.innerHTML = '<tr>' + COLS.map(c => {
+    if (!c.sortable) return '<th>' + c.label + '</th>';
+    const active = sortKey === c.key;
+    const arrow = active ? (sortDir === -1 ? '▼' : '▲') : '⇅';
+    const cls = active ? (sortDir === -1 ? 'sortable sort-desc' : 'sortable sort-asc') : 'sortable';
+    return '<th class="' + cls + '" onclick="setSort(&quot;' + c.key + '&quot;)">' + c.label + ' <i class="sort-icon">' + arrow + '</i></th>';
+  }).join('') + '</tr>';
 
-function renderTable() {
-  const q = document.getElementById('search').value.toLowerCase();
-  const tbody = document.getElementById('tbody');
+  let accounts = [...(data.accounts || [])];
+  if (filter === 'suspect') accounts = accounts.filter(a => a.suspect);
+  else if (filter === 'chatter') accounts = accounts.filter(a => a.isChatter);
+  else if (filter === 'follower') accounts = accounts.filter(a => a.isFollower);
+  if (search) accounts = accounts.filter(a => a.login.includes(search));
+  accounts = sortAccounts(accounts);
 
-  if (activeFilter === 'unfollowed') {
-    let data = allUnfollows.filter(v => v.login.toLowerCase().includes(q));
-    // Sort unfollows by login or followedAt
-    data = [...data].sort((a, b) => {
-      if (sortKey === 'login') return sortDir * a.login.localeCompare(b.login);
-      if (sortKey === 'followedAt') {
-        const va = a.followedAt ? new Date(a.followedAt).getTime() : Infinity;
-        const vb = b.followedAt ? new Date(b.followedAt).getTime() : Infinity;
-        return sortDir * (va < vb ? -1 : va > vb ? 1 : 0);
-      }
-      return 0;
-    });
-    if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">No unfollows recorded yet — checks every 10 min.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = data.map(v => {
-      const duration   = formatFollowDurationBetween(v.followedAt, v.unfollowedAt);
-      const unfollowAt = new Date(v.unfollowedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
-      const botBadge   = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
-      return '<tr>' +
-        '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
-        '<td style="color:var(--muted)">' + duration + '</td>' +
-        '<td style="color:var(--faint)">' + unfollowAt + '</td>' +
-        '<td>' + botBadge + '</td>' +
-        '</tr>';
-    }).join('');
+  const tbody = document.getElementById('tbody-accounts');
+  if (accounts.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No accounts match</td></tr>';
     return;
   }
-
-  let data = allAccounts.filter(v => {
-    if (!v.login.toLowerCase().includes(q)) return false;
-    if (activeFilter === 'suspect')        return v.suspect;
-    if (activeFilter === 'chatters')       return v.inChat;
-    if (activeFilter === 'followers-only') return !v.inChat;
-    return true;
-  });
-  data = sortAccounts(data);
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">No accounts match this filter.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = data.map(v => {
-    const [ageCls, ageLabel] = ageBadge(v.days);
-    const dateStr   = new Date(v.created).toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
-    const rowCls    = v.suspect ? ' class="suspected"' : '';
-    const botBadge  = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
-    const srcBadge  = v.inChat
-      ? '<span class="badge badge-chat">In chat</span>' + (v.isFollower ? '<span class="badge badge-follow">Follower</span>' : '')
-      : '<span class="badge badge-follow">Follower</span>';
-    const followDur = v.isFollower ? formatFollowDuration(v.followedAt) : '—';
-    const banBtn    = v.suspect
-      ? '<button class="ban-btn" id="ban-' + v.login + '" onclick="banUser(&quot;' + v.login + '&quot;)">🔨 Ban</button>'
+  tbody.innerHTML = accounts.map(a => {
+    const age = ageDays(a.createdAt);
+    const fAge = ageDays(a.followedAt);
+    let src = '';
+    if (a.isChatter && a.isFollower) src = '<span class="pill both">Chatter+Follower</span>';
+    else if (a.isChatter) src = '<span class="pill chatter">Chatter</span>';
+    else src = '<span class="pill follower">Follower</span>';
+    const status = a.suspect
+      ? '<span class="pill bot">⚠ Suspected Bot</span>'
+      : '<span class="pill clean">Clean</span>';
+    const banBtn = a.suspect
+      ? '<button class="ban-btn" onclick="banUser(&quot;' + a.login + '&quot;,this)">Ban</button>'
       : '';
-    return '<tr' + rowCls + '>' +
-      '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
-      '<td style="color:var(--muted)">' + dateStr + '</td>' +
-      '<td style="color:var(--faint)">' + formatAge(v.days) + '</td>' +
-      '<td style="color:var(--muted)">' + followDur + '</td>' +
-      '<td>' + srcBadge + '</td>' +
-      '<td>' + botBadge + '<span class="badge ' + ageCls + '">' + ageLabel + '</span></td>' +
-      '<td>' + banBtn + '</td>' +
-      '</tr>';
+    return '<tr>'
+      + '<td><a href="https://twitch.tv/' + a.login + '" target="_blank" style="color:#a970ff;text-decoration:none">' + a.login + '</a></td>'
+      + '<td>' + fmtDate(a.createdAt) + '</td>'
+      + '<td>' + fmtDays(age) + '</td>'
+      + '<td>' + (a.followedAt ? fmtDays(fAge) + ' ago' : '—') + '</td>'
+      + '<td>' + src + '</td>'
+      + '<td>' + status + '</td>'
+      + '<td>' + banBtn + '</td>'
+      + '</tr>';
   }).join('');
+
+  // Unfollows
+  const utbody = document.getElementById('tbody-unfollows');
+  const unfollows = data.unfollows || [];
+  if (unfollows.length === 0) {
+    utbody.innerHTML = '<tr><td colspan="4" class="empty">No unfollows recorded yet</td></tr>';
+  } else {
+    utbody.innerHTML = unfollows.map(u => {
+      const st = u.suspect
+        ? '<span class="pill bot">⚠ Bot</span>'
+        : '<span class="pill clean">Clean</span>';
+      return '<tr>'
+        + '<td><a href="https://twitch.tv/' + u.login + '" target="_blank" style="color:#a970ff;text-decoration:none">' + u.login + '</a></td>'
+        + '<td>' + fmtDate(u.followedAt) + '</td>'
+        + '<td>' + fmtDate(u.unfollowedAt) + '</td>'
+        + '<td>' + st + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  // Log
+  document.getElementById('logBox').innerHTML = (data.log || []).map(l => {
+    const cls = l.includes('❌') ? 'err' : '';
+    return '<div class="' + cls + '">' + l + '</div>';
+  }).join('');
+
+  // Stats
+  const accts = data.accounts || [];
+  document.getElementById('sChatters').textContent = accts.filter(a=>a.isChatter).length;
+  document.getElementById('sFollowers').textContent = accts.filter(a=>a.isFollower).length;
+  document.getElementById('sBots').textContent = accts.filter(a=>a.suspect).length;
+  document.getElementById('sUnfollows').textContent = (data.unfollows||[]).length;
+
+  // Header
+  const badge = document.getElementById('statusBadge');
+  if (data.error) { badge.textContent = '⚠ Error'; badge.className = 'badge err'; }
+  else if (data.running) { badge.textContent = '● Live'; badge.className = 'badge ok'; }
+  else { badge.textContent = 'Stopped'; badge.className = 'badge'; }
+
+  const si = document.getElementById('scanInfo');
+  si.textContent = data.lastScan ? 'Last scan: ' + new Date(data.lastScan).toLocaleTimeString() : '';
 }
 
-async function banUser(login) {
-  const btn = document.getElementById('ban-' + login);
-  if (!btn) return;
+async function banUser(login, btn) {
   btn.disabled = true;
   btn.textContent = 'Banning…';
   try {
     const r = await fetch('/api/ban', {
-      method:  'POST',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ login })
+      body: JSON.stringify({ login }),
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'Ban failed');
-    btn.textContent = '✓ Banned';
-    btn.classList.add('done');
-    // Fade out the row
-    const row = btn.closest('tr');
-    if (row) { row.style.transition = 'opacity 0.6s'; row.style.opacity = '0.3'; }
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = '🔨 Ban';
-    alert('Ban failed: ' + e.message);
+    const j = await r.json();
+    if (j.ok) {
+      showToast('✅ Banned ' + login);
+      data.accounts = (data.accounts || []).filter(a => a.login !== login);
+      render();
+    } else {
+      showToast('❌ ' + (j.error || 'Ban failed'));
+      btn.disabled = false; btn.textContent = 'Ban';
+    }
+  } catch (e) {
+    showToast('❌ ' + e.message);
+    btn.disabled = false; btn.textContent = 'Ban';
   }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
 }
 
 async function poll() {
   try {
     const r = await fetch('/api/state');
-    if (!r.ok) return;
-    const d = await r.json();
-
-    // Header
-    document.getElementById('channel-label').textContent =
-      (d.scanCount ? 'Scan #' + d.scanCount + ' · ' : '') +
-      (d.lastScan ? 'Last: ' + new Date(d.lastScan).toLocaleTimeString() : 'Starting…');
-    document.getElementById('pill-text').textContent = d.running ? 'Scanning…' : 'Watching';
-
-    // Error
-    const eb = document.getElementById('error-banner');
-    if (d.error) { eb.textContent = '⚠ ' + d.error; eb.style.display = 'block'; }
-    else { eb.style.display = 'none'; }
-
-    // Stats
-    document.getElementById('s-chatters').textContent        = d.stats.chatters.toLocaleString();
-    document.getElementById('s-followers').textContent       = d.stats.followers.toLocaleString();
-    document.getElementById('s-suspects').textContent        = d.stats.suspects;
-    document.getElementById('s-suspects-chat').textContent   = d.stats.suspectsChat;
-    document.getElementById('s-suspects-follow').textContent = d.stats.suspectsFollow;
-    document.getElementById('s-new').textContent             = d.stats.newAccounts;
-    document.getElementById('s-est').textContent             = d.stats.established;
-
-    // Unfollow badge on chip
-    const ub = document.getElementById('unfollow-badge');
-    if (d.stats.unfollows > 0) {
-      ub.textContent = d.stats.unfollows;
-      ub.style.display = 'inline';
-    } else {
-      ub.style.display = 'none';
-    }
-
-    // Data
-    allAccounts  = d.accounts;
-    allUnfollows = d.unfollows || [];
-    renderTable();
-
-    // Log
-    const logEl = document.getElementById('log-list');
-    if (!d.log.length) { logEl.innerHTML = '<div style="color:var(--faint)">No scans yet.</div>'; }
-    else {
-      logEl.innerHTML = d.log.map(e => {
-        const t = new Date(e.time).toLocaleTimeString();
-        return '<div class="log-entry ' + (e.type !== 'info' ? e.type : '') + '">[' + t + '] ' + e.msg + '</div>';
-      }).join('');
-    }
-  } catch(e) { console.error('Poll error:', e); }
+    if (r.status === 401) { location = '/login'; return; }
+    data = await r.json();
+    render();
+  } catch (e) { console.error(e); }
+  setTimeout(poll, 15000);
 }
 
-updateSortArrows();
 poll();
-setInterval(poll, 10000);
 </script>
 </body>
-</html>`;
-}
-
-// Start
-const missingVars = ['TWITCH_CLIENT_ID','TWITCH_TOKEN','TWITCH_CHANNEL','TWITCH_MOD_LOGIN','DISCORD_WEBHOOK_URL','DASHBOARD_PASSWORD']
-  .filter(v => !process.env[v]);
-if (missingVars.length) {
-  console.warn(`⚠ Missing env vars: ${missingVars.join(', ')} — set these in Render's environment settings.`);
-}
-
-app.listen(PORT, () => {
-  console.log(`Dashboard running on http://localhost:${PORT}`);
-  if (TWITCH_CLIENT_ID && TWITCH_TOKEN && TWITCH_CHANNEL) startLoop();
-  else console.warn('Scanner not started — missing Twitch credentials in environment variables.');
+</html>`);
 });
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+(async () => {
+  await initDb();
+  app.listen(PORT, () => addLog(`🚀 Server running on port ${PORT}`));
+  if (!TWITCH_TOKEN || !TWITCH_CLIENT_ID || !TWITCH_CHANNEL) {
+    addLog('⚠️  Missing TWITCH_TOKEN / TWITCH_CLIENT_ID / TWITCH_CHANNEL — scanner paused');
+  } else {
+    startScanner();
+  }
+})();
