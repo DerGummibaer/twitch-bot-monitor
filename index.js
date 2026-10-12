@@ -9,15 +9,16 @@ const PORT             = process.env.PORT || 3000;
 const TWITCH_TOKEN     = process.env.TWITCH_TOKEN;
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CHANNEL   = process.env.TWITCH_CHANNEL;
-const DISCORD_WEBHOOK  = process.env.DISCORD_WEBHOOK;
-const DASHBOARD_PASS   = process.env.DASHBOARD_PASS || 'changeme';
+const DISCORD_WEBHOOK  = process.env.DISCORD_WEBHOOK_URL;
+const DASHBOARD_PASS   = process.env.DASHBOARD_PASSWORD;
 const SESSION_SECRET   = process.env.SESSION_SECRET || 'twitch-monitor-secret';
 const TURSO_URL        = process.env.TURSO_URL;
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
 const DASHBOARD_URL    = process.env.DASHBOARD_URL || 'https://twitch-bot-monitor.onrender.com';
 
-const CHATTER_INTERVAL  = 2 * 60 * 1000;   // 2 min
-const FOLLOWER_INTERVAL = 10 * 60 * 1000;  // 10 min
+const TWITCH_MOD_LOGIN  = process.env.TWITCH_MOD_LOGIN;
+const CHATTER_INTERVAL  = (Number(process.env.SCAN_INTERVAL_SECONDS) || 120) * 1000;
+const FOLLOWER_INTERVAL = (Number(process.env.FOLLOWER_INTERVAL_SECONDS) || 600) * 1000;
 const BOT_PATTERN       = /^[a-z]{5}\d{2}$/i;
 
 function isSuspect(login, createdAt) {
@@ -140,7 +141,10 @@ async function getBroadcasterId() {
 }
 
 async function getModeratorId() {
-  const data = await twitchGet('https://api.twitch.tv/helix/users');
+  const url = TWITCH_MOD_LOGIN
+    ? `https://api.twitch.tv/helix/users?login=${encodeURIComponent(TWITCH_MOD_LOGIN)}`
+    : 'https://api.twitch.tv/helix/users';
+  const data = await twitchGet(url);
   return data.data[0]?.id;
 }
 
@@ -367,7 +371,7 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/login', (req, res) => {
-  if (req.body.password === DASHBOARD_PASS) {
+  if (DASHBOARD_PASS && req.body.password === DASHBOARD_PASS) {
     req.session.authed = true;
     res.redirect('/');
   } else {
