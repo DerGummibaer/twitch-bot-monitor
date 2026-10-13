@@ -560,6 +560,7 @@ function dashboardPage() {
   .field{display:grid;gap:5px;font-size:12px;color:#adadb8}
   .field b{color:#efeff1;font-weight:600;margin-left:4px}
   .field input[type=text],.field select{background:#0e0e10;border:1px solid #2d2d35;color:#efeff1;padding:7px 10px;border-radius:7px;font-size:13px;width:100%}
+  .field[hidden]{display:none}
   .field input[type=text]:focus,.field select:focus{outline:none;border-color:#a970ff}
   .field input[type=color]{width:100%;height:34px;background:#0e0e10;border:1px solid #2d2d35;border-radius:7px;padding:2px 3px;cursor:pointer}
   .field input[type=range]{accent-color:#a970ff;width:100%}
@@ -702,16 +703,19 @@ function dashboardPage() {
         <div class="card" id="lookCard" style="margin-bottom:16px">
           <h3>Look</h3>
           <div class="form">
-            <label class="field"><span>Font</span><input type="text" id="lkFont" list="fontList" maxlength="60" spellcheck="false" autocomplete="off"></label>
-            <p class="hint">Any font from fonts.google.com, or one installed on the streamer's PC. Type its exact name.</p>
-            <datalist id="fontList">
-              <option value="Cormorant Garamond"><option value="EB Garamond"><option value="Playfair Display"><option value="Cinzel">
-              <option value="Merriweather"><option value="Roboto Slab"><option value="Poppins"><option value="Montserrat">
-              <option value="Nunito"><option value="Quicksand"><option value="Fredoka"><option value="Oswald">
-              <option value="Bebas Neue"><option value="Righteous"><option value="Orbitron"><option value="Bangers">
-              <option value="Press Start 2P"><option value="VT323"><option value="Special Elite"><option value="Pacifico">
-              <option value="Lobster"><option value="Caveat"><option value="Permanent Marker">
-            </datalist>
+            <label class="field"><span>Font</span>
+              <select id="lkFontPick">
+                <optgroup label="Classic and film"><option>Cormorant Garamond</option><option>EB Garamond</option><option>Playfair Display</option><option>Cinzel</option><option>Libre Baskerville</option><option>Merriweather</option></optgroup>
+                <optgroup label="Clean and modern"><option>Poppins</option><option>Montserrat</option><option>Nunito</option><option>Quicksand</option><option>Fredoka</option><option>Raleway</option></optgroup>
+                <optgroup label="Big and bold"><option>Bebas Neue</option><option>Oswald</option><option>Anton</option><option>Righteous</option><option>Bangers</option><option>Archivo Black</option></optgroup>
+                <optgroup label="Gaming and retro"><option>Press Start 2P</option><option>VT323</option><option>Orbitron</option><option>Silkscreen</option><option>Audiowide</option><option>Russo One</option></optgroup>
+                <optgroup label="Handwritten"><option>Caveat</option><option>Pacifico</option><option>Permanent Marker</option><option>Lobster</option><option>Kalam</option><option>Indie Flower</option></optgroup>
+                <optgroup label="Typewriter"><option>Special Elite</option><option>Courier Prime</option><option>Cutive Mono</option></optgroup>
+                <option value="__custom">Another font…</option>
+              </select>
+            </label>
+            <label class="field" id="lkFontCustomWrap" hidden><span>Font name</span><input type="text" id="lkFont" maxlength="60" spellcheck="false" autocomplete="off" placeholder="e.g. Comic Neue"></label>
+            <p class="hint">Pick one from the list, or choose <b>Another font…</b> and type the exact name of any font from fonts.google.com or one installed on the streamer’s PC.</p>
             <div class="row2">
               <label class="field"><span>Names</span><input type="color" id="lkText"></label>
               <label class="field"><span>Headings and details</span><input type="color" id="lkLabel"></label>
@@ -929,7 +933,11 @@ let lookDirty = false;
 let previewTimer = null;
 
 function fillLook(s) {
-  document.getElementById('lkFont').value = s.font;
+  const pick = document.getElementById('lkFontPick');
+  const listed = Array.from(pick.options).some(o => o.value === s.font);
+  pick.value = listed ? s.font : '__custom';
+  document.getElementById('lkFont').value = listed ? '' : s.font;
+  document.getElementById('lkFontCustomWrap').hidden = listed;
   document.getElementById('lkText').value = s.textColor;
   document.getElementById('lkLabel').value = s.labelColor;
   document.getElementById('lkSize').value = s.size;
@@ -944,7 +952,8 @@ function readLook() {
   const show = {};
   SHOW_KEYS.forEach(k => { show[k] = document.getElementById('lkShow-' + k).checked; });
   return {
-    font:        document.getElementById('lkFont').value.trim() || 'Cormorant Garamond',
+    font:        (document.getElementById('lkFontPick').value === '__custom'
+                    ? document.getElementById('lkFont').value.trim() : document.getElementById('lkFontPick').value) || 'Cormorant Garamond',
     textColor:   document.getElementById('lkText').value,
     labelColor:  document.getElementById('lkLabel').value,
     size:        Number(document.getElementById('lkSize').value),
@@ -969,7 +978,12 @@ function sendPreview() {
   const f = document.getElementById('creditsFrame');
   if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'credits-preview', settings: readLook() }, location.origin);
 }
-function onLookEdit() {
+function onLookEdit(e) {
+  if (e && e.target && e.target.id === 'lkFontPick') {
+    const custom = e.target.value === '__custom';
+    document.getElementById('lkFontCustomWrap').hidden = !custom;
+    if (custom && e.type === 'change') document.getElementById('lkFont').focus();
+  }
   lookDirty = true;
   updateLookLabels();
   setLookStatus('Unsaved changes — the preview shows them, OBS doesn’t yet', true);

@@ -141,6 +141,16 @@ function createCredits(ctx) {
     catch (e) { addLog(`Credits DB error: ${e.message}`, 'warn'); return null; }
   }
 
+  async function addMissingColumns(db, table, columns) {
+    const info = await db.execute(`PRAGMA table_info(${table})`);
+    const have = new Set(info.rows.map(r => r.name));
+    for (const [name, type] of Object.entries(columns)) {
+      if (have.has(name)) continue;
+      await db.execute(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      addLog(`🛠 Updated the ${table} table (added ${name}) — saved data kept`);
+    }
+  }
+
   async function initStorage() {
     const db = getDb();
     if (!db) return;
@@ -156,6 +166,12 @@ function createCredits(ctx) {
          PRIMARY KEY (stream_id, login))`,
       `CREATE TABLE IF NOT EXISTS credits_settings (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)`
     ], 'write');
+
+    // Tables made by an older version keep their old columns ("CREATE TABLE IF NOT EXISTS"
+    // doesn't touch them), so add anything newer here. Existing data is left as it is.
+    await addMissingColumns(db, 'streams',         { last_live: 'TEXT', title: 'TEXT', game: 'TEXT', channel_name: 'TEXT' });
+    await addMissingColumns(db, 'stream_events',   { extra: 'TEXT', ts: 'TEXT' });
+    await addMissingColumns(db, 'stream_chatters', { suspect: 'INTEGER' });
 
     const st = await db.execute('SELECT json FROM credits_settings WHERE id = 1');
     if (st.rows.length) {
