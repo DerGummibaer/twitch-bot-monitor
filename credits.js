@@ -25,6 +25,48 @@ const KNOWN_BOTS = [
 // If the stream drops and comes back within this window, it's the same stream
 const RESUME_GRACE_MS = 15 * 60 * 1000;
 
+// How the credits look. Edited from the dashboard's Credits tab.
+const SECTION_KEYS = ['honours', 'raids', 'gifts', 'bits', 'subs', 'followers', 'chatStats'];
+const DEFAULT_SETTINGS = Object.freeze({
+  font:        'Cormorant Garamond',
+  textColor:   '#f2ede3',
+  labelColor:  '#d2cbbd',
+  size:        100,          // percent
+  speed:       70,           // pixels per second at 1080p
+  background:  'transparent',
+  shadow:      true,
+  closingText: 'Thanks for watching',
+  show: Object.freeze({ honours: true, raids: true, gifts: true, bits: true, subs: true, followers: true, chatStats: true })
+});
+
+function clamp(n, lo, hi, fallback) {
+  n = Number(n);
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : fallback;
+}
+
+// Accept only safe values, so nothing typed in the editor can break the page
+function cleanSettings(input, base) {
+  const src = input && typeof input === 'object' ? input : {};
+  const prev = base || DEFAULT_SETTINGS;
+  const color = (v, d) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : d);
+  const font = typeof src.font === 'string' ? src.font.trim().replace(/\s+/g, ' ') : prev.font;
+  const show = {};
+  for (const k of SECTION_KEYS) {
+    show[k] = src.show && typeof src.show[k] === 'boolean' ? src.show[k] : prev.show[k];
+  }
+  return {
+    font:        /^[A-Za-z0-9 \-]{1,60}$/.test(font) ? font : prev.font,
+    textColor:   color(src.textColor, prev.textColor),
+    labelColor:  color(src.labelColor, prev.labelColor),
+    size:        clamp(src.size  !== undefined ? src.size  : prev.size,  60, 160, prev.size),
+    speed:       clamp(src.speed !== undefined ? src.speed : prev.speed, 20, 200, prev.speed),
+    background:  ['transparent', 'black'].includes(src.background) ? src.background : prev.background,
+    shadow:      typeof src.shadow === 'boolean' ? src.shadow : prev.shadow,
+    closingText: typeof src.closingText === 'string' ? src.closingText.trim().slice(0, 120) : prev.closingText,
+    show
+  };
+}
+
 function parseIrc(line) {
   const msg = { tags: {}, prefix: null, command: null, params: [], trailing: null };
   let rest = line;
@@ -60,7 +102,7 @@ function parseIrc(line) {
 }
 
 function createCredits(ctx) {
-  const { app, getDb, addLog, isSuspect, isFlagged, twitchHeaders, resolveUserIds, env } = ctx;
+  const { app, getDb, addLog, requireAuth, isSuspect, isFlagged, twitchHeaders, resolveUserIds, env } = ctx;
   const channel = String(env.TWITCH_CHANNEL || '').toLowerCase();
   const scanMs  = (Number(env.SCAN_INTERVAL_SECONDS) || 120) * 1000;
   const hidden  = new Set([
@@ -78,6 +120,7 @@ function createCredits(ctx) {
     startedAt: null, channelName: env.TWITCH_CHANNEL || '', lastChecked: 0
   };
   let session = null;
+  let settings = cleanSettings({}, DEFAULT_SETTINGS);
   let lastPresenceTick = 0;
   const chat = { ws: null, connected: false, backoff: 2000, lastMsgAt: 0 };
 
@@ -109,9 +152,16 @@ function createCredits(ctx) {
          login TEXT, display TEXT, amount INTEGER, extra TEXT, ts TEXT)`,
       `CREATE TABLE IF NOT EXISTS stream_chatters (
          stream_id TEXT NOT NULL, login TEXT NOT NULL, display TEXT,
-         messages INTEGER NOT NULL DEFAULT 0, seconds INTEGER NOT NULL DEFAULT 0,
-         PRIMARY KEY (stream_id, login))`
+         messages INTEGER NOT NULL DEFAULT 0, seconds INTEGER NOT NULL DEFAULT 0, suspect INTEGER,
+         PRIMARY KEY (stream_id, login))`,
+      `CREATE TABLE IF NOT EXISTS credits_settings (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL)`
     ], 'write');
+
+    const st = await db.execute('SELECT json FROM credits_settings WHERE id = 1');
+    if (st.rows.length) {
+      try { settings = cleanSettings(JSON.parse(st.rows[0].json), DEFAULT_SETTINGS); }
+      catch (e) { addLog('Saved credits look was unreadable — using the default look', 'warn'); }
+    }
 
     // Restore the most recent stream so credits survive a restart
     const r = await db.execute('SELECT * FROM streams ORDER BY started_at DESC LIMIT 1');
@@ -133,12 +183,13 @@ function createCredits(ctx) {
       if (e.type === 'follow') session.followSet.add(e.login);
     }
     const ch = await db.execute({
-      sql: 'SELECT login, display, messages, seconds FROM stream_chatters WHERE stream_id = ?',
+      sql: 'SELECT login, display, messages, seconds, suspect FROM stream_chatters WHERE stream_id = ?',
       args: [s.id]
     });
     for (const c of ch.rows) {
       session.chatters.set(c.login, {
-        display: c.display, messages: Number(c.messages) || 0, seconds: Number(c.seconds) || 0
+        display: c.display, messages: Number(c.messages) || 0, seconds: Number(c.seconds) || 0,
+        suspect: c.suspect === null || c.suspect === undefined ? null : !!c.suspect
       });
     }
     addLog(`🎬 Restored credits for the stream from ${new Date(s.started_at).toLocaleString('en-GB')}`);
@@ -169,10 +220,11 @@ function createCredits(ctx) {
     const stmts = [...session.dirty].map(login => {
       const c = session.chatters.get(login);
       return {
-        sql: `INSERT INTO stream_chatters (stream_id, login, display, messages, seconds) VALUES (?, ?, ?, ?, ?)
+        sql: `INSERT INTO stream_chatters (stream_id, login, display, messages, seconds, suspect) VALUES (?, ?, ?, ?, ?, ?)
               ON CONFLICT(stream_id, login) DO UPDATE SET display = excluded.display,
-                messages = excluded.messages, seconds = excluded.seconds`,
-        args: [session.id, login, c.display, c.messages, Math.round(c.seconds)]
+                messages = excluded.messages, seconds = excluded.seconds, suspect = excluded.suspect`,
+        args: [session.id, login, c.display, c.messages, Math.round(c.seconds),
+               c.suspect === null ? null : (c.suspect ? 1 : 0)]
       };
     });
     session.dirty.clear();
@@ -183,7 +235,8 @@ function createCredits(ctx) {
 
   function chatter(login, display) {
     let c = session.chatters.get(login);
-    if (!c) { c = { display: display || login, messages: 0, seconds: 0 }; session.chatters.set(login, c); }
+    if (!c) { c = { display: display || login, messages: 0, seconds: 0, suspect: null }; session.chatters.set(login, c); }
+    if (isFlagged(login)) c.suspect = true;   // once flagged, stays flagged for this stream
     if (display) c.display = display;
     session.dirty.add(login);
     return c;
@@ -257,8 +310,31 @@ function createCredits(ctx) {
     for (const c of chatters) chatter(c.user_login, c.user_name).seconds += dt / 1000;
 
     await pollNewFollowers(broadcasterId, modId);
+    await checkChattersForBots();
     await flushChatters();
     await saveStream();
+  }
+
+  // Decide once per person per stream whether they're a suspected bot, so a bot that
+  // chats and then leaves still can't win "most messages" or "longest in chat".
+  async function checkChattersForBots() {
+    const unknown = [];
+    for (const [login, c] of session.chatters) {
+      if (c.suspect !== null) continue;
+      if (isFlagged(login)) { c.suspect = true; session.dirty.add(login); continue; }
+      // Only names shaped like the bot pattern need their account date looked up.
+      // (Testing with a May 2024 date tells us whether the name alone already rules it out.)
+      if (!isSuspect(login, '2024-05-15T00:00:00Z')) { c.suspect = false; session.dirty.add(login); continue; }
+      unknown.push(login);
+    }
+    if (!unknown.length) return;
+    const users   = await resolveUserIds(unknown);
+    const created = new Map(users.map(u => [u.login.toLowerCase(), u.created_at]));
+    for (const login of unknown) {
+      const c = session.chatters.get(login);
+      c.suspect = created.has(login) ? isSuspect(login, created.get(login)) : false;
+      session.dirty.add(login);
+    }
   }
 
   async function pollNewFollowers(broadcasterId, modId) {
@@ -421,7 +497,7 @@ function createCredits(ctx) {
       .map(e => ({ name: e.display, viewers: e.amount }));
 
     const people = [...session.chatters.entries()]
-      .filter(([login]) => !leaveOut(login))
+      .filter(([login, c]) => !c.suspect && !leaveOut(login))
       .map(([, c]) => ({ name: c.display, messages: c.messages, seconds: Math.round(c.seconds) }));
     const longest   = people.filter(p => p.seconds > 0).sort((a, b) => b.seconds - a.seconds)[0] || null;
     const chattiest = people.filter(p => p.messages > 0).sort((a, b) => b.messages - a.messages)[0] || null;
@@ -457,7 +533,20 @@ function createCredits(ctx) {
   });
   app.get('/credits/:key/data', (req, res) => {
     if (req.params.key !== creditsKey) return res.status(404).json({ error: 'Not found' });
-    res.set('Cache-Control', 'no-store').json(buildCredits());
+    res.set('Cache-Control', 'no-store').json({ ...buildCredits(), settings });
+  });
+
+  // Save the look from the dashboard editor
+  app.post('/api/credits-settings', requireAuth, async (req, res) => {
+    const next = req.body && req.body.reset ? cleanSettings({}, DEFAULT_SETTINGS) : cleanSettings(req.body, settings);
+    settings = next;
+    const r = await dbExec(
+      `INSERT INTO credits_settings (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
+      [JSON.stringify(settings)]
+    );
+    const saved = !getDb() || r !== null;
+    addLog(req.body && req.body.reset ? '🎬 Credits look reset to default' : '🎬 Credits look updated');
+    res.json({ ok: true, settings, stored: saved });
   });
 
   function status() {
@@ -465,7 +554,9 @@ function createCredits(ctx) {
       live: { ...live },
       chatConnected: chat.connected,
       creditsPath: '/credits/' + creditsKey,
-      credits: buildCredits()
+      credits: buildCredits(),
+      settings,
+      defaults: DEFAULT_SETTINGS
     };
   }
 

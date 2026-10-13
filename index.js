@@ -362,6 +362,7 @@ const credits = createCredits({
   app,
   getDb:          () => db,
   addLog,
+  requireAuth,
   isSuspect,
   isFlagged:      login => !!(state.accounts.get(login) || {}).suspect,
   twitchHeaders,
@@ -536,6 +537,7 @@ function dashboardPage() {
   .badge{background:#2d2d35;padding:3px 10px;border-radius:20px;font-size:12px;color:#adadb8;white-space:nowrap}
   .badge.ok{background:#1a3a1a;color:#4caf50}
   .badge.err{background:#3a1a1a;color:#f04747}
+  .badge:empty{display:none}
   .badge.live{background:#3a1a1a;color:#ff5c5c;font-weight:600}
   .credits-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:20px;align-items:start}
   .card{background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:18px}
@@ -553,7 +555,25 @@ function dashboardPage() {
   .kv dd{color:#efeff1}
   .preview{position:relative;width:100%;max-width:100%;aspect-ratio:16/9;border-radius:10px;overflow:hidden;border:1px solid #2d2d35;background-color:#2a2a31;background-image:linear-gradient(45deg,#34343c 25%,transparent 25%,transparent 75%,#34343c 75%),linear-gradient(45deg,#34343c 25%,transparent 25%,transparent 75%,#34343c 75%);background-size:24px 24px;background-position:0 0,12px 12px}
   .preview iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
-  @media(max-width:900px){.credits-grid{grid-template-columns:1fr}}
+  .preview-col{position:sticky;top:76px}
+  .form{display:grid;gap:12px}
+  .field{display:grid;gap:5px;font-size:12px;color:#adadb8}
+  .field b{color:#efeff1;font-weight:600;margin-left:4px}
+  .field input[type=text],.field select{background:#0e0e10;border:1px solid #2d2d35;color:#efeff1;padding:7px 10px;border-radius:7px;font-size:13px;width:100%}
+  .field input[type=text]:focus,.field select:focus{outline:none;border-color:#a970ff}
+  .field input[type=color]{width:100%;height:34px;background:#0e0e10;border:1px solid #2d2d35;border-radius:7px;padding:2px 3px;cursor:pointer}
+  .field input[type=range]{accent-color:#a970ff;width:100%}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .hint{font-size:12px;color:#6b6b7a;margin:-6px 0 0}
+  .card p.hint{margin-bottom:0}
+  .check{display:flex;gap:8px;align-items:center;font-size:13px;color:#efeff1;cursor:pointer}
+  .check input{accent-color:#a970ff;width:15px;height:15px}
+  fieldset.shows{border:1px solid #2d2d35;border-radius:8px;padding:10px 12px 12px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  fieldset.shows legend{font-size:12px;color:#adadb8;padding:0 4px}
+  .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  #lkStatus{font-size:12px;color:#adadb8}
+  #lkStatus.dirty{color:#f59e0b}
+  @media(max-width:900px){.credits-grid{grid-template-columns:1fr}.preview-col{position:static}}
   .logout{border:1px solid #3a3a4a;color:#adadb8;padding:5px 12px;border-radius:6px;font-size:12px;text-decoration:none}
   .logout:hover{border-color:#a970ff;color:#efeff1}
   .main{padding:24px;max-width:1400px;margin:0 auto}
@@ -676,15 +696,56 @@ function dashboardPage() {
             <li>Press OK, then drag the source where you want it. Dragging the corners works, but text stays sharpest if you change the width and height in the source's properties instead.</li>
             <li>Tick <b>Refresh browser when scene becomes active</b> so the credits start from the top every time.</li>
           </ol>
-          <p style="margin-top:10px">The background is see-through, so the credits sit on top of whatever is behind them. Add <b>?bg=black</b> to the end of the link for a solid black background instead.</p>
+          <p style="margin-top:10px">The background is see-through unless you change it under <b>Look</b> below.</p>
           <p>Keep this link private. Anyone with it can see the credits, but nothing else.</p>
+        </div>
+        <div class="card" id="lookCard" style="margin-bottom:16px">
+          <h3>Look</h3>
+          <div class="form">
+            <label class="field"><span>Font</span><input type="text" id="lkFont" list="fontList" maxlength="60" spellcheck="false" autocomplete="off"></label>
+            <p class="hint">Any font from fonts.google.com, or one installed on the streamer's PC. Type its exact name.</p>
+            <datalist id="fontList">
+              <option value="Cormorant Garamond"><option value="EB Garamond"><option value="Playfair Display"><option value="Cinzel">
+              <option value="Merriweather"><option value="Roboto Slab"><option value="Poppins"><option value="Montserrat">
+              <option value="Nunito"><option value="Quicksand"><option value="Fredoka"><option value="Oswald">
+              <option value="Bebas Neue"><option value="Righteous"><option value="Orbitron"><option value="Bangers">
+              <option value="Press Start 2P"><option value="VT323"><option value="Special Elite"><option value="Pacifico">
+              <option value="Lobster"><option value="Caveat"><option value="Permanent Marker">
+            </datalist>
+            <div class="row2">
+              <label class="field"><span>Names</span><input type="color" id="lkText"></label>
+              <label class="field"><span>Headings and details</span><input type="color" id="lkLabel"></label>
+            </div>
+            <label class="field"><span>Text size<b id="lkSizeVal"></b></span><input type="range" id="lkSize" min="60" max="160" step="5"></label>
+            <label class="field"><span>Scroll speed<b id="lkSpeedVal"></b></span><input type="range" id="lkSpeed" min="20" max="200" step="5"></label>
+            <label class="field"><span>Background</span>
+              <select id="lkBg"><option value="transparent">See-through</option><option value="black">Solid black</option></select>
+            </label>
+            <label class="check"><input type="checkbox" id="lkShadow"> Shadow behind the text (helps it stand out over gameplay)</label>
+            <label class="field"><span>Closing line</span><input type="text" id="lkClosing" maxlength="120" placeholder="Leave empty to hide it"></label>
+            <fieldset class="shows">
+              <legend>Show these sections</legend>
+              <label class="check"><input type="checkbox" id="lkShow-honours"> Special mentions</label>
+              <label class="check"><input type="checkbox" id="lkShow-raids"> Raiders</label>
+              <label class="check"><input type="checkbox" id="lkShow-gifts"> Gifted subs</label>
+              <label class="check"><input type="checkbox" id="lkShow-bits"> Bits</label>
+              <label class="check"><input type="checkbox" id="lkShow-subs"> Subscribers</label>
+              <label class="check"><input type="checkbox" id="lkShow-followers"> New followers</label>
+              <label class="check"><input type="checkbox" id="lkShow-chatStats"> Chat totals</label>
+            </fieldset>
+            <div class="actions">
+              <button class="btn" id="lkSave" onclick="saveLook()">Save</button>
+              <button class="btn ghost" onclick="resetLook()">Reset to default</button>
+              <span id="lkStatus"></span>
+            </div>
+          </div>
         </div>
         <div class="card">
           <h3 id="creditsHeading">This stream</h3>
           <dl class="kv" id="creditsSummary"></dl>
         </div>
       </div>
-      <div>
+      <div class="preview-col">
         <div class="preview"><iframe id="creditsFrame" title="Credits preview"></iframe></div>
         <div style="display:flex;gap:8px;margin-top:10px">
           <button class="btn ghost" onclick="reloadPreview()">Restart preview</button>
@@ -862,6 +923,100 @@ function creditsUrl() {
   const p = data.stream && data.stream.creditsPath;
   return p ? location.origin + p : '';
 }
+const SHOW_KEYS = ['honours', 'raids', 'gifts', 'bits', 'subs', 'followers', 'chatStats'];
+let lookLoaded = false;
+let lookDirty = false;
+let previewTimer = null;
+
+function fillLook(s) {
+  document.getElementById('lkFont').value = s.font;
+  document.getElementById('lkText').value = s.textColor;
+  document.getElementById('lkLabel').value = s.labelColor;
+  document.getElementById('lkSize').value = s.size;
+  document.getElementById('lkSpeed').value = s.speed;
+  document.getElementById('lkBg').value = s.background;
+  document.getElementById('lkShadow').checked = !!s.shadow;
+  document.getElementById('lkClosing').value = s.closingText;
+  SHOW_KEYS.forEach(k => { document.getElementById('lkShow-' + k).checked = !!s.show[k]; });
+  updateLookLabels();
+}
+function readLook() {
+  const show = {};
+  SHOW_KEYS.forEach(k => { show[k] = document.getElementById('lkShow-' + k).checked; });
+  return {
+    font:        document.getElementById('lkFont').value.trim() || 'Cormorant Garamond',
+    textColor:   document.getElementById('lkText').value,
+    labelColor:  document.getElementById('lkLabel').value,
+    size:        Number(document.getElementById('lkSize').value),
+    speed:       Number(document.getElementById('lkSpeed').value),
+    background:  document.getElementById('lkBg').value,
+    shadow:      document.getElementById('lkShadow').checked,
+    closingText: document.getElementById('lkClosing').value,
+    show
+  };
+}
+function updateLookLabels() {
+  document.getElementById('lkSizeVal').textContent = document.getElementById('lkSize').value + '%';
+  const sp = Number(document.getElementById('lkSpeed').value);
+  document.getElementById('lkSpeedVal').textContent = sp < 50 ? 'slow' : sp > 110 ? 'fast' : 'normal';
+}
+function setLookStatus(text, dirty) {
+  const el = document.getElementById('lkStatus');
+  el.textContent = text;
+  el.className = dirty ? 'dirty' : '';
+}
+function sendPreview() {
+  const f = document.getElementById('creditsFrame');
+  if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'credits-preview', settings: readLook() }, location.origin);
+}
+function onLookEdit() {
+  lookDirty = true;
+  updateLookLabels();
+  setLookStatus('Unsaved changes — the preview shows them, OBS doesn’t yet', true);
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(sendPreview, 300);
+}
+async function postLook(body) {
+  const r = await fetch('/api/credits-settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) throw new Error(j.error || 'Could not save');
+  if (data.stream) data.stream.settings = j.settings;
+  fillLook(j.settings);
+  lookDirty = false;
+  sendPreview();
+  return j;
+}
+async function saveLook() {
+  const btn = document.getElementById('lkSave');
+  btn.disabled = true;
+  try {
+    const j = await postLook(readLook());
+    setLookStatus(j.stored ? 'Saved. OBS uses it the next time the credits start.' : 'Saved for now, but the database didn’t store it. It will reset if the app restarts.', !j.stored);
+    showToast('✅ Credits look saved');
+  } catch (e) {
+    setLookStatus('Not saved: ' + e.message, true);
+  }
+  btn.disabled = false;
+}
+async function resetLook() {
+  if (!confirm('Reset the credits to the default look?')) return;
+  try {
+    await postLook({ reset: true });
+    setLookStatus('Back to the default look.', false);
+    showToast('✅ Credits look reset');
+  } catch (e) {
+    setLookStatus('Not reset: ' + e.message, true);
+  }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const card = document.getElementById('lookCard');
+  card.addEventListener('input', onLookEdit);
+  card.addEventListener('change', onLookEdit);
+  document.getElementById('creditsFrame').addEventListener('load', () => { if (lookDirty) setTimeout(sendPreview, 300); });
+});
+
 function reloadPreview() {
   const u = creditsUrl();
   if (!u) return;
@@ -884,6 +1039,7 @@ function renderCredits() {
   if (!st) return;
   const link = document.getElementById('creditsLink');
   if (link.value !== creditsUrl()) link.value = creditsUrl();
+  if (!lookLoaded && st.settings) { fillLook(st.settings); lookLoaded = true; }
   const c = st.credits || {};
   const box = document.getElementById('creditsSummary');
   const heading = document.getElementById('creditsHeading');
