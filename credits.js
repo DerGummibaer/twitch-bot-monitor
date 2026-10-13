@@ -113,7 +113,9 @@ function createCredits(ctx) {
   // Private link for OBS. Derived from SESSION_SECRET so no extra setting is needed.
   const creditsKey = env.CREDITS_KEY ||
     crypto.createHash('sha256').update(String(env.SESSION_SECRET) + ':obs-credits').digest('hex').slice(0, 24);
-  const pageHtml = fs.readFileSync(path.join(__dirname, 'credits.html'), 'utf8');
+  const rawPage     = fs.readFileSync(path.join(__dirname, 'credits.html'), 'utf8');
+  const pageVersion = crypto.createHash('sha1').update(rawPage).digest('hex').slice(0, 12);
+  const pageHtml    = rawPage.split('__PAGE_VERSION__').join(pageVersion);
 
   const live = {
     isLive: false, title: null, game: null, viewers: 0,
@@ -545,12 +547,12 @@ function createCredits(ctx) {
   // ── Routes ─────────────────────────────────────────────────────────────────
   app.get('/credits/:key', (req, res) => {
     if (req.params.key !== creditsKey) return res.status(404).send('Not found');
-    res.type('html').send(pageHtml);
+    res.set('Cache-Control', 'no-store').type('html').send(pageHtml);
   });
   app.get('/credits/:key/data', (req, res) => {
     if (req.params.key !== creditsKey) return res.status(404).json({ error: 'Not found' });
     const body = req.query.sample === '1' ? { ...sampleCredits(), sample: true } : buildCredits();
-    res.set('Cache-Control', 'no-store').json({ ...body, settings });
+    res.set('Cache-Control', 'no-store').json({ ...body, settings, pageVersion });
   });
 
   // A made-up stream for trying out the look. Never stored, never mixed with real data.

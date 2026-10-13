@@ -1014,7 +1014,7 @@ async function saveLook() {
   btn.disabled = true;
   try {
     const j = await postLook(readLook());
-    setLookStatus(j.stored ? 'Saved. OBS uses it the next time the credits start.' : 'Saved for now, but the database didn’t store it. It will reset if the app restarts.', !j.stored);
+    setLookStatus(j.stored ? 'Saved. OBS updates within about 10 seconds.' : 'Saved for now, but the database didn’t store it. It will reset if the app restarts.', !j.stored);
     showToast('✅ Credits look saved');
   } catch (e) {
     setLookStatus('Not saved: ' + e.message, true);

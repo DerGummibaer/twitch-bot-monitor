@@ -23,6 +23,10 @@
   /* Solid black background (from the editor, or ?bg=black on the link) */
   body.solid { --bg: #000; }
   body.noshadow { --shadow: none; }
+  /* OBS adds its own Custom CSS to browser sources (by default it forces a see-through
+     background). These win over it, so the editor's choices always show. */
+  html body { font-family: var(--font), 'Cormorant Garamond', Georgia, 'Times New Roman', serif !important; color: var(--ink) !important; }
+  html body.solid { background: #000 !important; }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; overflow: hidden; background: transparent; }
@@ -108,6 +112,7 @@
   var urlBg    = params.get('bg');                    // ?bg=black or ?bg=transparent overrides the editor
   var LOOP     = params.get('loop') !== '0';
 
+  var PAGE_VERSION = '__PAGE_VERSION__';   // filled in by the server
   var SAMPLE   = params.get('sample') === '1';
   var dataUrl  = location.pathname.replace(/\/+$/, '') + '/data' + (SAMPLE ? '?sample=1' : '');
   var roll     = document.getElementById('roll');
@@ -274,12 +279,42 @@
 
   function schedule(ms) { clearTimeout(timer); timer = setTimeout(cycle, ms); }
 
+  var lastSettingsJson = null;
+
+  // After an update to the app, an open OBS source reloads itself instead of running old code
+  function outdated(d) {
+    return d.pageVersion && PAGE_VERSION.charAt(0) !== '_' && d.pageVersion !== PAGE_VERSION;
+  }
+
   function cycle() {
     fetch(dataUrl, { cache: 'no-store' })
       .then(function (r) { return r.json(); })
-      .then(function (d) { lastData = d; return show(d); })
+      .then(function (d) {
+        if (outdated(d)) { location.reload(); return; }
+        lastData = d;
+        lastSettingsJson = JSON.stringify(d.settings);
+        return show(d);
+      })
       .catch(function () { schedule(10000); });
   }
+
+  // Check every few seconds for a newly saved look, so OBS updates soon after you press Save
+  setInterval(function () {
+    if (preview) return;
+    fetch(dataUrl, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (outdated(d)) { location.reload(); return; }
+        var j = JSON.stringify(d.settings);
+        if (lastSettingsJson !== null && j !== lastSettingsJson) {
+          lastSettingsJson = j;
+          lastData = d;
+          clearTimeout(timer);
+          show(d);
+        }
+      })
+      .catch(function () { /* try again next time */ });
+  }, 8000);
 
   // The dashboard editor sends unsaved changes here so the preview updates as you edit
   window.addEventListener('message', function (e) {
