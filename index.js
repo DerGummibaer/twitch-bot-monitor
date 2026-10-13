@@ -5,6 +5,7 @@ const session      = require('express-session');
 const fetch        = require('node-fetch');
 const path         = require('path');
 const { createClient } = require('@libsql/client');
+const { createCredits } = require('./credits');
 
 // ─── Config from environment variables ───────────────────────────────────────
 const {
@@ -321,6 +322,13 @@ async function runScan() {
       addLog(`Scan #${state.scanCount} — ${chatterLogins.size} chatters, ${followerLogins.size.toLocaleString()} followers, ${suspects} suspected bots total`);
     }
 
+    // Stream credits — a failure here shouldn't break bot scanning
+    try {
+      await credits.afterScan({ chatters, broadcasterId, modId });
+    } catch (e) {
+      addLog(`Credits update failed: ${e.message}`, 'warn');
+    }
+
   } catch (e) {
     state.error = e.message;
     addLog(`Scan error: ${e.message}`, 'error');
@@ -348,6 +356,18 @@ app.use(session({
   cookie:            { maxAge: 24 * 60 * 60 * 1000 } // 24h
 }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Stream credits (live detection, chat tracking, OBS page at /credits/<private key>)
+const credits = createCredits({
+  app,
+  getDb:          () => db,
+  addLog,
+  isSuspect,
+  isFlagged:      login => !!(state.accounts.get(login) || {}).suspect,
+  twitchHeaders,
+  resolveUserIds,
+  env:            process.env
+});
 
 function requireAuth(req, res, next) {
   if (req.session.authed) return next();
@@ -404,7 +424,8 @@ app.get('/api/state', requireAuth, (req, res) => {
       unfollows:      state.unfollows.length
     },
     accounts,
-    unfollows: state.unfollows
+    unfollows: state.unfollows,
+    stream:    credits.status()
   });
 });
 
@@ -515,6 +536,24 @@ function dashboardPage() {
   .badge{background:#2d2d35;padding:3px 10px;border-radius:20px;font-size:12px;color:#adadb8;white-space:nowrap}
   .badge.ok{background:#1a3a1a;color:#4caf50}
   .badge.err{background:#3a1a1a;color:#f04747}
+  .badge.live{background:#3a1a1a;color:#ff5c5c;font-weight:600}
+  .credits-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:20px;align-items:start}
+  .card{background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:18px}
+  .card h3{font-size:13px;font-weight:600;color:#efeff1;margin-bottom:10px}
+  .card p{font-size:13px;color:#adadb8;line-height:1.55;margin-bottom:10px}
+  .card ol{font-size:13px;color:#adadb8;line-height:1.6;padding-left:18px;margin-bottom:4px}
+  .linkrow{display:flex;gap:8px;margin-bottom:12px}
+  .linkrow input{flex:1;min-width:0;background:#0e0e10;border:1px solid #2d2d35;color:#efeff1;padding:7px 10px;border-radius:7px;font-size:12px;font-family:Consolas,Menlo,monospace}
+  .btn{background:#a970ff;border:none;color:#fff;padding:7px 14px;border-radius:7px;cursor:pointer;font-size:12px;font-weight:600;text-decoration:none;white-space:nowrap}
+  .btn:hover{background:#bf93ff}
+  .btn.ghost{background:transparent;border:1px solid #3a3a4a;color:#adadb8}
+  .btn.ghost:hover{border-color:#a970ff;color:#efeff1}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}
+  .kv dt{color:#6b6b7a}
+  .kv dd{color:#efeff1}
+  .preview{position:relative;width:100%;max-width:100%;aspect-ratio:16/9;border-radius:10px;overflow:hidden;border:1px solid #2d2d35;background-color:#2a2a31;background-image:linear-gradient(45deg,#34343c 25%,transparent 25%,transparent 75%,#34343c 75%),linear-gradient(45deg,#34343c 25%,transparent 25%,transparent 75%,#34343c 75%);background-size:24px 24px;background-position:0 0,12px 12px}
+  .preview iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+  @media(max-width:900px){.credits-grid{grid-template-columns:1fr}}
   .logout{border:1px solid #3a3a4a;color:#adadb8;padding:5px 12px;border-radius:6px;font-size:12px;text-decoration:none}
   .logout:hover{border-color:#a970ff;color:#efeff1}
   .main{padding:24px;max-width:1400px;margin:0 auto}
@@ -577,6 +616,7 @@ function dashboardPage() {
 <header>
   <h1>🤖 Twitch Bot Monitor</h1>
   <span id="statusBadge" class="badge">Connecting…</span>
+  <span id="liveBadge" class="badge">Offline</span>
   <span id="scanInfo" class="badge"></span>
   <a class="logout" href="/logout">Sign out</a>
 </header>
@@ -600,6 +640,7 @@ function dashboardPage() {
     <div class="tab active" id="tab-accounts" onclick="switchTab(&quot;accounts&quot;)">Accounts</div>
     <div class="tab" id="tab-bots" onclick="switchTab(&quot;bots&quot;)">⚠ Suspected bots <span class="count" id="cBots">0</span></div>
     <div class="tab" id="tab-unfollows" onclick="switchTab(&quot;unfollows&quot;)">👋 Unfollows <span class="count" id="cUnfollows">0</span></div>
+    <div class="tab" id="tab-credits" onclick="switchTab(&quot;credits&quot;)">🎬 Credits</div>
     <div class="tab" id="tab-log" onclick="switchTab(&quot;log&quot;)">Log</div>
   </div>
 
@@ -617,6 +658,39 @@ function dashboardPage() {
         <thead id="thead"></thead>
         <tbody id="tbody"></tbody>
       </table>
+    </div>
+  </div>
+
+  <div id="panel-credits" class="panel">
+    <div class="credits-grid">
+      <div>
+        <div class="card" style="margin-bottom:16px">
+          <h3>Add the credits to OBS</h3>
+          <div class="linkrow">
+            <input id="creditsLink" readonly value="Loading…">
+            <button class="btn" onclick="copyCreditsLink()">Copy</button>
+          </div>
+          <ol>
+            <li>In your ending scene, add a <b>Browser</b> source.</li>
+            <li>Paste the link as the URL. Set the width and height to the area you want it in: 1920 × 1080 for full screen, or something like 600 × 1080 for a side column.</li>
+            <li>Press OK, then drag the source where you want it. Dragging the corners works, but text stays sharpest if you change the width and height in the source's properties instead.</li>
+            <li>Tick <b>Refresh browser when scene becomes active</b> so the credits start from the top every time.</li>
+          </ol>
+          <p style="margin-top:10px">The background is see-through, so the credits sit on top of whatever is behind them. Add <b>?bg=black</b> to the end of the link for a solid black background instead.</p>
+          <p>Keep this link private. Anyone with it can see the credits, but nothing else.</p>
+        </div>
+        <div class="card">
+          <h3 id="creditsHeading">This stream</h3>
+          <dl class="kv" id="creditsSummary"></dl>
+        </div>
+      </div>
+      <div>
+        <div class="preview"><iframe id="creditsFrame" title="Credits preview"></iframe></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn ghost" onclick="reloadPreview()">Restart preview</button>
+          <a class="btn ghost" id="creditsOpen" href="#" target="_blank">Open full screen</a>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -653,8 +727,10 @@ function switchTab(t) {
   tab = t;
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
   document.getElementById('tab-' + t).classList.add('active');
-  document.getElementById('panel-table').classList.toggle('active', t !== 'log');
+  document.getElementById('panel-table').classList.toggle('active', t !== 'log' && t !== 'credits');
   document.getElementById('panel-log').classList.toggle('active', t === 'log');
+  document.getElementById('panel-credits').classList.toggle('active', t === 'credits');
+  if (t === 'credits') { renderCredits(); reloadPreview(); return; }
   document.getElementById('fSource').style.display = t === 'unfollows' ? 'none' : '';
   if (t === 'unfollows') { sortKey = 'unfollowedAt'; sortDir = -1; }
   else if (sortKey === 'unfollowedAt' || sortKey === 'duration') { sortKey = 'created'; sortDir = -1; }
@@ -782,7 +858,68 @@ function render() {
   }).join('');
 }
 
+function creditsUrl() {
+  const p = data.stream && data.stream.creditsPath;
+  return p ? location.origin + p : '';
+}
+function reloadPreview() {
+  const u = creditsUrl();
+  if (!u) return;
+  document.getElementById('creditsFrame').src = u + '?t=' + Date.now();
+  document.getElementById('creditsOpen').href = u;
+}
+function copyCreditsLink() {
+  const u = creditsUrl();
+  if (!u) return;
+  const done = () => showToast('✅ Link copied');
+  if (navigator.clipboard) navigator.clipboard.writeText(u).then(done, () => { document.getElementById('creditsLink').select(); });
+  else { document.getElementById('creditsLink').select(); document.execCommand('copy'); done(); }
+}
+function fmtDuration(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h ? h + 'h ' + m + 'm' : m + 'm';
+}
+function renderCredits() {
+  const st = data.stream;
+  if (!st) return;
+  const link = document.getElementById('creditsLink');
+  if (link.value !== creditsUrl()) link.value = creditsUrl();
+  const c = st.credits || {};
+  const box = document.getElementById('creditsSummary');
+  const heading = document.getElementById('creditsHeading');
+  if (c.empty) {
+    heading.textContent = 'No stream recorded yet';
+    box.innerHTML = '<dd style="grid-column:1/-1;color:#adadb8">Stats start collecting the next time the channel goes live.</dd>';
+    return;
+  }
+  heading.textContent = c.live ? 'This stream (live now)' : 'Last stream';
+  const row = (k, v) => '<dt>' + k + '</dt><dd>' + v + '</dd>';
+  const top = (arr, unit) => arr.length ? esc(arr[0].name) + ' <span class="faint">(' + arr[0].total.toLocaleString() + ' ' + unit + ')</span>' : '—';
+  box.innerHTML =
+    row('Started', fmtDateTime(c.startedAt)) +
+    row('Length', fmtDuration(c.durationSec)) +
+    row('Longest in chat', c.longest ? esc(c.longest.name) + ' <span class="faint">(' + fmtDuration(c.longest.seconds) + ')</span>' : '—') +
+    row('Most messages', c.chattiest ? esc(c.chattiest.name) + ' <span class="faint">(' + c.chattiest.messages.toLocaleString() + ')</span>' : '—') +
+    row('Top gifter', top(c.gifters, 'subs')) +
+    row('Top cheerer', top(c.cheerers, 'bits')) +
+    row('New followers', c.followers.length) +
+    row('Subscribers', c.subs.length) +
+    row('Raids', c.raids.length) +
+    row('Chat', c.totals.messages.toLocaleString() + ' messages from ' + c.totals.chatters.toLocaleString() + ' people');
+}
+
 function renderChrome() {
+  const lb = document.getElementById('liveBadge');
+  const lv = data.stream && data.stream.live;
+  if (lv && lv.isLive) {
+    lb.textContent = '🔴 Live · ' + Number(lv.viewers).toLocaleString() + ' viewers · ' + fmtDuration((Date.now() - new Date(lv.startedAt)) / 1000);
+    lb.className = 'badge live';
+  } else {
+    lb.textContent = 'Offline';
+    lb.className = 'badge';
+  }
+  if (tab === 'credits') renderCredits();
+
   const s = data.stats || {};
   const set = (id, v) => { document.getElementById(id).textContent = (v == null ? '—' : Number(v).toLocaleString()); };
   set('sChatters', s.chatters); set('sFollowers', s.followers); set('sBots', s.suspects); set('sUnfollows', s.unfollows);
@@ -796,7 +933,7 @@ function renderChrome() {
   const badge = document.getElementById('statusBadge');
   if (data.error) { badge.textContent = '⚠ Error'; badge.className = 'badge err'; }
   else if (data.running) { badge.textContent = '● Scanning…'; badge.className = 'badge ok'; }
-  else if (data.lastScan) { badge.textContent = '● Live'; badge.className = 'badge ok'; }
+  else if (data.lastScan) { badge.textContent = '● Monitoring'; badge.className = 'badge ok'; }
   else { badge.textContent = 'Starting…'; badge.className = 'badge'; }
 
   document.getElementById('scanInfo').textContent = data.lastScan
@@ -866,7 +1003,7 @@ if (missingVars.length) {
   console.warn(`⚠ Missing env vars: ${missingVars.join(', ')} — set these in Render's environment settings.`);
 }
 
-initDb().then(() => {
+initDb().then(() => TWITCH_CHANNEL ? credits.init() : null).then(() => {
   app.listen(PORT, () => {
     console.log(`Dashboard running on http://localhost:${PORT}`);
     if (TWITCH_CLIENT_ID && TWITCH_TOKEN && TWITCH_CHANNEL) startLoop();

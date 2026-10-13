@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stream Credits</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap" rel="stylesheet">
+<style>
+  /* Everything is sized in --u, which follows the browser source's own size:
+     on 16:9 it equals 1% of the height; on a narrow source it shrinks with the width. */
+  :root {
+    --u: min(1vh, 0.5625vw);
+    --ink: #f2ede3;      /* warm film white */
+    --dim: #d2cbbd;      /* role labels (bright enough over gameplay) */
+    --faint: #aaa395;    /* small details */
+    --shadow: 0 0 calc(var(--u) * .5) rgba(0,0,0,.9), 0 calc(var(--u) * .15) calc(var(--u) * .35) rgba(0,0,0,.95), 0 0 calc(var(--u) * 1.6) rgba(0,0,0,.65);
+    --bg: transparent;
+  }
+  /* ?bg=black brings back the solid cinema look */
+  body.solid { --bg: #000; --dim: #8e877a; --faint: #5c574e; --shadow: none; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: transparent; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+    text-shadow: var(--shadow);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #roll { position: absolute; left: 0; right: 0; top: 0; will-change: transform; padding: 0 calc(var(--u) * 6); }
+  #probe { position: absolute; visibility: hidden; height: calc(var(--u) * 100); width: 1px; }
+
+  /* Opening title card */
+  .title-card { text-align: center; padding: calc(var(--u) * 8) 0 calc(var(--u) * 14); }
+  .title-card .channel {
+    font-size: calc(var(--u) * 11); font-weight: 500; line-height: 1; letter-spacing: .04em;
+    overflow-wrap: anywhere;
+  }
+  .title-card .stream-title {
+    font-style: italic; font-size: calc(var(--u) * 3.4); opacity: .9;
+    margin: calc(var(--u) * 3.2) auto 0; max-width: 90%; line-height: 1.3;
+  }
+  .title-card .meta { font-size: calc(var(--u) * 2.4); color: var(--dim); margin-top: calc(var(--u) * 1.6); }
+
+  /* Classic two-column credit: role right-aligned | name left-aligned */
+  .credit {
+    display: grid; grid-template-columns: 1fr 1fr; column-gap: calc(var(--u) * 2.2);
+    margin-bottom: calc(var(--u) * 7); align-items: start;
+  }
+  .role {
+    text-align: right; font-style: italic; color: var(--dim);
+    font-size: calc(var(--u) * 2.9); line-height: 1.5; padding-top: calc(var(--u) * .5);
+  }
+  .names { text-align: left; font-size: calc(var(--u) * 3.6); font-weight: 500; line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
+  .names .detail { color: var(--faint); font-weight: 400; font-style: italic; font-size: .72em; margin-left: .5em; }
+  .names.cols { column-count: 2; column-gap: calc(var(--u) * 4); }
+  .names.cols div { break-inside: avoid; }
+
+  /* Special mentions get a centred card of their own */
+  .honour { text-align: center; margin-bottom: calc(var(--u) * 9); }
+  .honour .role { text-align: center; padding: 0; font-size: calc(var(--u) * 3); }
+  .honour .who { font-size: calc(var(--u) * 6.4); font-weight: 500; line-height: 1.15; margin-top: calc(var(--u) * .6); overflow-wrap: anywhere; }
+  .honour .what { font-size: calc(var(--u) * 2.6); color: var(--dim); margin-top: calc(var(--u) * .6); }
+
+  .divider { width: calc(var(--u) * 6); height: 1px; background: var(--faint); margin: calc(var(--u) * 4) auto calc(var(--u) * 10); }
+
+  .closing { text-align: center; padding: calc(var(--u) * 10) 0 0; }
+  .closing .thanks { font-size: calc(var(--u) * 6); font-style: italic; }
+  .closing .small { font-size: calc(var(--u) * 2.4); color: var(--dim); margin-top: calc(var(--u) * 2); }
+
+  .empty { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 calc(var(--u) * 6); }
+  .empty .channel { font-size: calc(var(--u) * 8); font-weight: 500; overflow-wrap: anywhere; }
+  .empty .small { font-size: calc(var(--u) * 2.6); color: var(--dim); margin-top: calc(var(--u) * 2); font-style: italic; }
+
+  /* Short, wide sources (a banner): let the text use more of the height */
+  @media (min-aspect-ratio: 5/2) {
+    :root { --u: min(1.9vh, 0.5625vw); }
+  }
+
+  /* Tall, narrow sources (a side column): stack each role above its names, everything centred */
+  @media (max-aspect-ratio: 1/1) {
+    :root { --u: min(0.8vh, 1.15vw); }
+    .credit { grid-template-columns: 1fr; text-align: center; row-gap: calc(var(--u) * .8); }
+    .role, .names { text-align: center; }
+    .names.cols { column-count: 1; }
+  }
+</style>
+</head>
+<body>
+<div id="roll"></div>
+<div id="probe"></div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var SPEED  = Math.max(10, Number(params.get('speed')) || 70);  // pixels per second at 1080p
+  var LOOP   = params.get('loop') !== '0';
+  var bg = params.get('bg');
+  if (bg === 'black' || bg === 'solid') document.body.classList.add('solid');
+
+  var dataUrl = location.pathname.replace(/\/+$/, '') + '/data';
+  var roll = document.getElementById('roll');
+  var anim = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function num(n) { return Number(n || 0).toLocaleString('en-GB'); }
+  function plural(n, one, many) { return num(n) + ' ' + (Number(n) === 1 ? one : many); }
+  function duration(sec) {
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    if (h && m) return h + 'h ' + m + 'm';
+    if (h) return h + 'h';
+    return m + 'm';
+  }
+
+  function credit(role, rows, manyColumns) {
+    if (!rows.length) return '';
+    var cls = 'names' + (manyColumns && rows.length > 12 ? ' cols' : '');
+    return '<section class="credit"><div class="role">' + esc(role) + '</div><div class="' + cls + '">' +
+      rows.map(function (r) { return '<div>' + r + '</div>'; }).join('') + '</div></section>';
+  }
+  function honour(role, who, what) {
+    return '<section class="honour"><div class="role">' + esc(role) + '</div>' +
+      '<div class="who">' + esc(who) + '</div><div class="what">' + esc(what) + '</div></section>';
+  }
+
+  function render(d) {
+    if (d.empty) {
+      roll.innerHTML = '<div class="empty"><div class="channel">' + esc(d.channel) + '</div>' +
+        '<div class="small">The credits will fill in once the stream goes live.</div></div>';
+      return false;
+    }
+
+    var date = new Date(d.startedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    var meta = [d.game, date, duration(d.durationSec)].filter(Boolean).map(esc).join(' &nbsp;·&nbsp; ');
+
+    var html = '<header class="title-card">' +
+      '<div class="channel">' + esc(d.channel) + '</div>' +
+      (d.title ? '<div class="stream-title">' + esc(d.title) + '</div>' : '') +
+      '<div class="meta">' + meta + '</div></header>';
+
+    var honours = '';
+    if (d.longest)   honours += honour('Longest in chat', d.longest.name, 'in chat for ' + duration(d.longest.seconds));
+    if (d.chattiest) honours += honour('Most messages', d.chattiest.name, plural(d.chattiest.messages, 'message', 'messages'));
+    if (d.gifters.length)  honours += honour('Most generous gifter', d.gifters[0].name, plural(d.gifters[0].total, 'gifted sub', 'gifted subs'));
+    if (d.cheerers.length) honours += honour('Biggest cheer', d.cheerers[0].name, plural(d.cheerers[0].total, 'bit', 'bits'));
+    if (honours) html += honours + '<div class="divider"></div>';
+
+    html += credit('Raided by', d.raids.map(function (r) {
+      return esc(r.name) + '<span class="detail">with ' + plural(r.viewers, 'viewer', 'viewers') + '</span>';
+    }));
+    html += credit('Gifted subs', d.gifters.map(function (g) {
+      return esc(g.name) + '<span class="detail">× ' + num(g.total) + '</span>';
+    }));
+    html += credit('Cheered', d.cheerers.map(function (c) {
+      return esc(c.name) + '<span class="detail">' + plural(c.total, 'bit', 'bits') + '</span>';
+    }));
+    html += credit(d.subs.length === 1 ? 'Subscriber' : 'Subscribers', d.subs.map(function (s) {
+      var det = s.plan === 'Prime' ? 'Prime' : (s.months > 1 ? s.months + ' months' : 'new');
+      return esc(s.name) + '<span class="detail">' + det + '</span>';
+    }), true);
+    html += credit(d.followers.length === 1 ? 'New follower' : 'New followers', d.followers.map(esc), true);
+
+    html += '<footer class="closing"><div class="thanks">Thanks for watching</div>' +
+      '<div class="small">' + plural(d.totals.messages, 'message', 'messages') + ' from ' +
+      plural(d.totals.chatters, 'person', 'people') + ' in chat</div></footer>';
+
+    roll.innerHTML = html;
+    return true;
+  }
+
+  function play() {
+    var vh = window.innerHeight;
+    var h  = roll.offsetHeight;
+    // Scroll speed follows the text size, so a smaller source scrolls proportionally slower
+    var unit = document.getElementById('probe').offsetHeight / 100 || vh / 100;
+    var pxPerSec = SPEED * (unit / 10.8);
+    var start = Math.round(vh * 0.45);   // title appears straight away instead of after a black screen
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (anim) anim.cancel();
+    anim = roll.animate(
+      [{ transform: 'translateY(' + start + 'px)' }, { transform: 'translateY(' + (-h) + 'px)' }],
+      { duration: reduce ? 1 : ((start + h) / pxPerSec) * 1000, easing: 'linear', fill: 'forwards' }
+    );
+    anim.onfinish = function () { if (LOOP) setTimeout(cycle, 2500); };
+  }
+
+  function cycle() {
+    fetch(dataUrl, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (render(d)) play(); else setTimeout(cycle, 60000); })
+      .catch(function () { setTimeout(cycle, 10000); });
+  }
+
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(cycle); else cycle();
+})();
+</script>
+</body>
+</html>
