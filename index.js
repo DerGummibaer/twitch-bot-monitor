@@ -504,402 +504,354 @@ function dashboardPage() {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Twitch Bot Monitor</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0e0e10;--surface:#18181b;--surface2:#1f1f23;--surface3:#26262c;
-  --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.14);
-  --purple:#9147ff;--purple-d:#772ce8;--purple-faint:rgba(145,71,255,0.12);
-  --text:#efeff1;--muted:#adadb8;--faint:#6b6b7a;
-  --amber:#f59e0b;--amber-bg:rgba(245,158,11,0.12);
-  --green:#22c55e;--green-bg:rgba(34,197,94,0.12);
-  --red:#f87171;--red-bg:rgba(248,113,113,0.12);
-  --blue:#60a5fa;--blue-bg:rgba(96,165,250,0.12);
-  --radius:8px;--radius-lg:12px;
-}
-body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.5;min-height:100vh;padding:0 0 4rem}
-.header{background:var(--surface);border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;gap:12px;height:56px;position:sticky;top:0;z-index:10}
-.header svg{color:var(--purple)}
-.header-title{font-size:15px;font-weight:600}
-.header-sub{font-size:12px;color:var(--muted)}
-.header-spacer{flex:1}
-.pill{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border2);border-radius:100px;padding:5px 14px;font-size:12px;color:var(--muted)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
-.dot.live{background:var(--green);box-shadow:0 0 0 3px rgba(34,197,94,0.25);animation:pulse 1.8s ease-in-out infinite}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(34,197,94,0.25)}50%{box-shadow:0 0 0 6px rgba(34,197,94,0.08)}}
-.logout{font-size:12px;color:var(--faint);text-decoration:none;margin-left:10px}
-.logout:hover{color:var(--red)}
-.page{max-width:960px;margin:0 auto;padding:2rem}
-.error-banner{background:var(--red-bg);border:1px solid rgba(248,113,113,0.25);border-radius:var(--radius);color:var(--red);font-size:13px;padding:10px 14px;margin-bottom:1rem;display:none}
-.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px}
-.stats-grid2{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1.5rem}
-.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px}
-.stat-label{font-size:11px;color:var(--faint);margin-bottom:4px}
-.stat-val{font-size:22px;font-weight:600}
-.purple{color:var(--purple)}.blue{color:var(--blue)}.orange{color:var(--amber)}.red{color:var(--red)}.green{color:var(--green)}
-.section-title{font-size:11px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.75rem;padding-bottom:6px;border-bottom:1px solid var(--border)}
-.filter-row{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
-.chip{font-size:12px;padding:4px 12px;border-radius:100px;border:1px solid var(--border2);background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:all .12s}
-.chip:hover{border-color:var(--purple);color:var(--text)}
-.chip.active{background:var(--purple);color:#fff;border-color:var(--purple)}
-.search-wrap{position:relative;margin-bottom:12px}
-.search-icon{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--faint);pointer-events:none}
-.search-wrap input{padding-left:34px;width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:13px;padding:8px 12px 8px 34px;outline:none}
-.search-wrap input:focus{border-color:var(--purple);box-shadow:0 0 0 3px var(--purple-faint)}
-.table-wrap{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.table-scroll{max-height:420px;overflow-y:auto}
-table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{background:var(--surface2);color:var(--faint);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:9px 14px;text-align:left;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
-tbody td{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
-tbody tr:last-child td{border-bottom:none}
-tbody tr:hover td{background:var(--surface2)}
-tbody tr.suspected td{background:rgba(245,158,11,0.05)}
-tbody tr.suspected:hover td{background:rgba(245,158,11,0.1)}
-.account-link{color:var(--blue);text-decoration:none;font-weight:500}
-.account-link:hover{text-decoration:underline}
-.account-link.bot{color:var(--amber)}
-.badge{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:500;border-radius:100px;padding:2px 8px;margin-right:3px;white-space:nowrap}
-.badge-bot{background:var(--amber-bg);color:var(--amber);border:1px solid rgba(245,158,11,0.3)}
-.badge-chat{background:var(--purple-faint);color:#c4a0ff;border:1px solid rgba(145,71,255,0.25)}
-.badge-follow{background:var(--surface3);color:var(--muted);border:1px solid var(--border2)}
-.badge-new{background:var(--red-bg);color:var(--red)}
-.badge-young{background:var(--amber-bg);color:var(--amber)}
-.badge-est{background:var(--green-bg);color:var(--green)}
-.log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.log-title{font-size:11px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
-.log-list{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;max-height:160px;overflow-y:auto;font-size:12px;font-family:'Menlo','Consolas',monospace}
-.log-entry{padding:2px 0;border-bottom:1px solid var(--border);color:var(--muted)}
-.log-entry:last-child{border-bottom:none}
-.log-entry.warn,.log-entry.error{color:var(--amber)}
-.log-entry.error{color:var(--red)}
-.empty{text-align:center;color:var(--faint);padding:2.5rem;font-size:13px}
-.ban-btn{background:transparent;border:1px solid rgba(248,113,113,0.3);color:var(--red);border-radius:6px;padding:2px 8px;font-size:11px;font-family:inherit;cursor:pointer;transition:all .12s;white-space:nowrap}
-.ban-btn:hover{background:var(--red-bg);border-color:var(--red)}
-.ban-btn:disabled{opacity:0.4;cursor:default}
-.ban-btn.done{border-color:var(--faint);color:var(--faint)}
-@media(max-width:600px){.stats-grid,.stats-grid2{grid-template-columns:repeat(2,1fr)}.page{padding:1rem}.header{padding:0 1rem}}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0e0e10;color:#efeff1;font-family:'Inter',system-ui,sans-serif;font-size:14px;min-height:100vh}
+  header{background:#18181b;border-bottom:1px solid #2d2d35;padding:14px 24px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5}
+  header h1{font-size:1rem;font-weight:700;color:#a970ff;flex:1}
+  .badge{background:#2d2d35;padding:3px 10px;border-radius:20px;font-size:12px;color:#adadb8;white-space:nowrap}
+  .badge.ok{background:#1a3a1a;color:#4caf50}
+  .badge.err{background:#3a1a1a;color:#f04747}
+  .logout{border:1px solid #3a3a4a;color:#adadb8;padding:5px 12px;border-radius:6px;font-size:12px;text-decoration:none}
+  .logout:hover{border-color:#a970ff;color:#efeff1}
+  .main{padding:24px;max-width:1400px;margin:0 auto}
+  .error-banner{display:none;background:#3a1a1a;border:1px solid #5a2a2a;color:#f04747;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+  .stats.small .stat{padding:10px 16px}
+  .stats.small .stat-val{font-size:1.15rem}
+  .stats.small{margin-bottom:20px}
+  .stat{background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:14px 20px}
+  .stat-val{font-size:1.6rem;font-weight:700;color:#a970ff}
+  .stat-lbl{font-size:11px;color:#adadb8;text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+  .red{color:#f04747!important}.amber{color:#f59e0b!important}.green{color:#4caf50!important}.blue{color:#00c8ff!important}
+  .tabs{display:flex;gap:2px;margin-bottom:16px;border-bottom:1px solid #2d2d35;flex-wrap:wrap}
+  .tab{padding:8px 18px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px;color:#adadb8;user-select:none;display:flex;align-items:center;gap:6px}
+  .tab:hover{color:#efeff1}
+  .tab.active{color:#a970ff;border-bottom-color:#a970ff}
+  .count{background:#2d2d35;color:#adadb8;border-radius:20px;padding:0 7px;font-size:11px;font-weight:600}
+  .count.hot{background:#f04747;color:#fff}
+  .filters{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+  .filters select,.filters input{background:#18181b;border:1px solid #2d2d35;color:#efeff1;padding:7px 12px;border-radius:7px;font-size:13px;outline:none}
+  .filters input{min-width:220px}
+  .filters select:focus,.filters input:focus{border-color:#a970ff}
+  .tbl-wrap{overflow:auto;max-height:65vh;border-radius:10px;border:1px solid #2d2d35}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #1e1e24}
+  th{background:#18181b;color:#adadb8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;z-index:1;white-space:nowrap}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:hover{color:#efeff1}
+  .sort-icon{display:inline-block;margin-left:4px;opacity:.4;font-style:normal}
+  th.sorted .sort-icon{opacity:1;color:#a970ff}
+  tr:hover td{background:#18181b88}
+  tr.suspected td{background:rgba(240,71,71,.06)}
+  tr.suspected:hover td{background:rgba(240,71,71,.11)}
+  a.user{color:#a970ff;text-decoration:none;font-weight:500}
+  a.user.bot{color:#f04747}
+  a.user:hover{text-decoration:underline}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;margin-right:4px;white-space:nowrap}
+  .pill.bot{background:#3a1a1a;color:#f04747}
+  .pill.clean{background:#1a1a3a;color:#5865f2}
+  .pill.chatter{background:#1a3a3a;color:#00c8ff}
+  .pill.follower{background:#1a3a1a;color:#4caf50}
+  .pill.both{background:#2d1a3a;color:#a970ff}
+  .pill.new{background:#3a1a1a;color:#f04747}
+  .pill.young{background:#3a2e1a;color:#f59e0b}
+  .pill.est{background:#1a3a1a;color:#4caf50}
+  .muted{color:#adadb8}.faint{color:#6b6b7a}
+  .ban-btn{background:#f04747;border:none;color:#fff;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}
+  .ban-btn:hover{background:#ff6060}
+  .ban-btn:disabled{background:#444;cursor:not-allowed}
+  .panel{display:none}.panel.active{display:block}
+  .log-box{background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:16px;max-height:65vh;overflow-y:auto;font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.7;color:#adadb8}
+  .log-box .warn{color:#f59e0b}.log-box .error{color:#f04747}
+  #toast{position:fixed;bottom:20px;right:20px;background:#18181b;border:1px solid #2d2d35;border-radius:10px;padding:12px 18px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:99}
+  #toast.show{opacity:1}
+  .empty{text-align:center;padding:40px;color:#adadb8}
+  @media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}.main{padding:16px}header{padding:12px 16px;flex-wrap:wrap}}
 </style>
 </head>
 <body>
-<header class="header">
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>
-  <div><div class="header-title">Bot Monitor</div><div class="header-sub" id="channel-label">Loading…</div></div>
-  <div class="header-spacer"></div>
-  <div class="pill"><div class="dot live" id="pulse-dot"></div><span id="pill-text">Scanning…</span></div>
-  <a href="/logout" class="logout">Sign out</a>
+<header>
+  <h1>🤖 Twitch Bot Monitor</h1>
+  <span id="statusBadge" class="badge">Connecting…</span>
+  <span id="scanInfo" class="badge"></span>
+  <a class="logout" href="/logout">Sign out</a>
 </header>
+<div class="main">
+  <div id="errorBanner" class="error-banner"></div>
 
-<main class="page">
-  <div class="error-banner" id="error-banner"></div>
-
-  <div class="stats-grid" style="margin-bottom:10px">
-    <div class="stat"><div class="stat-label">Live chatters</div><div class="stat-val purple" id="s-chatters">—</div></div>
-    <div class="stat"><div class="stat-label">Followers scanned</div><div class="stat-val blue" id="s-followers">—</div></div>
-    <div class="stat"><div class="stat-label">Suspected bots</div><div class="stat-val orange" id="s-suspects">—</div></div>
+  <div class="stats">
+    <div class="stat"><div class="stat-val blue" id="sChatters">—</div><div class="stat-lbl">Chatters</div></div>
+    <div class="stat"><div class="stat-val green" id="sFollowers">—</div><div class="stat-lbl">Followers</div></div>
+    <div class="stat"><div class="stat-val red" id="sBots">—</div><div class="stat-lbl">Suspected bots</div></div>
+    <div class="stat"><div class="stat-val" id="sUnfollows">—</div><div class="stat-lbl">Unfollows tracked</div></div>
   </div>
-  <div class="stats-grid2" style="margin-bottom:1.5rem">
-    <div class="stat"><div class="stat-label">Bots in chat</div><div class="stat-val orange" id="s-suspects-chat">—</div></div>
-    <div class="stat"><div class="stat-label">Bots followers-only</div><div class="stat-val red" id="s-suspects-follow">—</div></div>
-    <div class="stat"><div class="stat-label">New accounts &lt;30d</div><div class="stat-val red" id="s-new">—</div></div>
-    <div class="stat"><div class="stat-label">Established 1yr+</div><div class="stat-val green" id="s-est">—</div></div>
+  <div class="stats small">
+    <div class="stat"><div class="stat-val red" id="sBotsChat">—</div><div class="stat-lbl">Bots in chat</div></div>
+    <div class="stat"><div class="stat-val amber" id="sBotsFollow">—</div><div class="stat-lbl">Bots followers-only</div></div>
+    <div class="stat"><div class="stat-val red" id="sNew">—</div><div class="stat-lbl">New accounts &lt;30d</div></div>
+    <div class="stat"><div class="stat-val green" id="sEst">—</div><div class="stat-lbl">Established 1yr+</div></div>
   </div>
 
-  <div class="section-title" style="margin-bottom:.75rem">Accounts</div>
-  <div class="filter-row">
-    <button class="chip active" onclick="setFilter('all')" id="f-all">All</button>
-    <button class="chip" onclick="setFilter('suspect')" id="f-suspect">⚠ Suspected bots</button>
-    <button class="chip" onclick="setFilter('chatters')" id="f-chatters">In chat now</button>
-    <button class="chip" onclick="setFilter('followers-only')" id="f-followers-only">Followers only</button>
-    <button class="chip" onclick="setFilter('unfollowed')" id="f-unfollowed">👋 Unfollowed <span id="unfollow-badge" style="display:none;background:var(--red);color:#fff;border-radius:100px;padding:1px 6px;font-size:10px;margin-left:4px">0</span></button>
+  <div class="tabs">
+    <div class="tab active" id="tab-accounts" onclick="switchTab(&quot;accounts&quot;)">Accounts</div>
+    <div class="tab" id="tab-bots" onclick="switchTab(&quot;bots&quot;)">⚠ Suspected bots <span class="count" id="cBots">0</span></div>
+    <div class="tab" id="tab-unfollows" onclick="switchTab(&quot;unfollows&quot;)">👋 Unfollows <span class="count" id="cUnfollows">0</span></div>
+    <div class="tab" id="tab-log" onclick="switchTab(&quot;log&quot;)">Log</div>
   </div>
-  <div class="search-wrap">
-    <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input type="text" id="search" placeholder="Filter by username…" oninput="renderTable()" />
-  </div>
-  <div class="table-wrap" style="margin-bottom:1.5rem">
-    <div class="table-scroll">
-      <table id="main-table">
-        <thead id="main-thead"><tr>
-          <th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>
-          <th onclick="setSort(&quot;created&quot;)" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">&#8597;</span></th>
-          <th onclick="setSort(&quot;days&quot;)" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">&#8597;</span></th>
-          <th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>
-          <th>Source</th>
-          <th>Status</th>
-          <th></th>
-        </tr></thead>
+
+  <div id="panel-table" class="panel active">
+    <div class="filters">
+      <select id="fSource" onchange="render()">
+        <option value="all">Chatters &amp; followers</option>
+        <option value="chatter">In chat now</option>
+        <option value="follower">Followers only</option>
+      </select>
+      <input id="fSearch" type="text" placeholder="Search username…" oninput="render()">
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead id="thead"></thead>
         <tbody id="tbody"></tbody>
       </table>
     </div>
   </div>
 
-  <div class="section-title">Scan log</div>
-  <div class="log-list" id="log-list"><div style="color:var(--faint)">Loading…</div></div>
-</main>
-
-<style>
-.sort-arrow { font-size: 11px; color: var(--faint); margin-left: 3px; }
-th.sort-active .sort-arrow { color: var(--purple); }
-th:hover .sort-arrow { color: var(--muted); }
-</style>
+  <div id="panel-log" class="panel">
+    <div id="logBox" class="log-box"></div>
+  </div>
+</div>
+<div id="toast"></div>
 
 <script>
-let allAccounts = [];
-let allUnfollows = [];
-let activeFilter = 'all';
+let data = { accounts: [], unfollows: [], log: [], stats: {} };
+let tab = 'accounts';
 let sortKey = 'created';
-let sortDir = 1; // 1 = asc, -1 = desc
+let sortDir = -1;
 
-const SORTABLE = ['login', 'created', 'days', 'followedAt'];
+const ACCOUNT_COLS = [
+  { key: 'login',      label: 'Username',      sortable: true },
+  { key: 'created',    label: 'Created',       sortable: true },
+  { key: 'days',       label: 'Acct age',      sortable: true },
+  { key: 'followedAt', label: 'Following for', sortable: true },
+  { key: null,         label: 'Source' },
+  { key: null,         label: 'Status' },
+  { key: null,         label: '' }
+];
+const UNFOLLOW_COLS = [
+  { key: 'login',        label: 'Username',      sortable: true },
+  { key: 'duration',     label: 'Followed for',  sortable: true },
+  { key: 'followedAt',   label: 'Followed on',   sortable: true },
+  { key: 'unfollowedAt', label: 'Unfollowed',    sortable: true },
+  { key: null,           label: 'Status' }
+];
+
+function switchTab(t) {
+  tab = t;
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + t).classList.add('active');
+  document.getElementById('panel-table').classList.toggle('active', t !== 'log');
+  document.getElementById('panel-log').classList.toggle('active', t === 'log');
+  document.getElementById('fSource').style.display = t === 'unfollows' ? 'none' : '';
+  if (t === 'unfollows') { sortKey = 'unfollowedAt'; sortDir = -1; }
+  else if (sortKey === 'unfollowedAt' || sortKey === 'duration') { sortKey = 'created'; sortDir = -1; }
+  render();
+}
 
 function setSort(key) {
-  if (!SORTABLE.includes(key)) return;
-  if (sortKey === key) sortDir *= -1;
-  else { sortKey = key; sortDir = 1; }
-  updateSortArrows();
-  renderTable();
+  if (sortKey === key) sortDir = -sortDir;
+  else { sortKey = key; sortDir = key === 'login' ? 1 : -1; }
+  render();
 }
 
-function updateSortArrows() {
-  SORTABLE.forEach(k => {
-    const el = document.getElementById('arr-' + k);
-    const th = el ? el.closest('th') : null;
-    if (!el) return;
-    if (k === sortKey) {
-      el.textContent = sortDir === 1 ? '↑' : '↓';
-      th && th.classList.add('sort-active');
-    } else {
-      el.textContent = '↕';
-      th && th.classList.remove('sort-active');
-    }
-  });
-}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
 
-function sortAccounts(data) {
-  return [...data].sort((a, b) => {
-    let va, vb;
-    if (sortKey === 'login') {
-      return sortDir * a.login.localeCompare(b.login);
-    }
-    if (sortKey === 'created') {
-      va = new Date(a.created).getTime();
-      vb = new Date(b.created).getTime();
-    } else if (sortKey === 'days') {
-      va = a.days ?? Infinity;
-      vb = b.days ?? Infinity;
-    } else if (sortKey === 'followedAt') {
-      // Sort by follow duration descending = longest followers first
-      va = a.followedAt ? new Date(a.followedAt).getTime() : Infinity;
-      vb = b.followedAt ? new Date(b.followedAt).getTime() : Infinity;
-    }
-    return sortDir * (va < vb ? -1 : va > vb ? 1 : 0);
-  });
-}
+function daysSince(iso) { return iso ? Math.floor((Date.now() - new Date(iso)) / 86400000) : null; }
+function daysBetween(a, b) { return (a && b) ? Math.floor((new Date(b) - new Date(a)) / 86400000) : null; }
 
-function setFilter(f) {
-  activeFilter = f;
-  document.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
-  document.getElementById('f-' + f).classList.add('active');
-  // Swap table header for unfollowed view
-  const thead = document.getElementById('main-thead');
-  if (f === 'unfollowed') {
-    thead.innerHTML = '<tr>' +
-      '<th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Followed for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
-      '<th>Unfollowed at</th>' +
-      '<th>Status</th>' +
-      '</tr>';
-  } else {
-    thead.innerHTML = '<tr>' +
-      '<th onclick="setSort(&quot;login&quot;)" style="cursor:pointer;user-select:none">Username <span class="sort-arrow" id="arr-login">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;created&quot;)" style="cursor:pointer;user-select:none">Created <span class="sort-arrow" id="arr-created">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;days&quot;)" style="cursor:pointer;user-select:none">Age <span class="sort-arrow" id="arr-days">&#8597;</span></th>' +
-      '<th onclick="setSort(&quot;followedAt&quot;)" style="cursor:pointer;user-select:none">Following for <span class="sort-arrow" id="arr-followedAt">&#8597;</span></th>' +
-      '<th>Source</th>' +
-      '<th>Status</th>' +
-      '<th></th>' +
-      '</tr>';
-  }
-  updateSortArrows();
-  renderTable();
+function fmtAge(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  if (n < 1) return 'today';
+  if (n < 30) return n + 'd';
+  if (n < 365) return Math.floor(n / 30) + 'mo';
+  const y = Math.floor(n / 365), m = Math.floor((n % 365) / 30);
+  return m ? y + 'y ' + m + 'mo' : y + 'y';
 }
-
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
 function ageBadge(days) {
-  if (days < 30)  return ['badge-new',   'New'];
-  if (days < 365) return ['badge-young', 'Young'];
-  return ['badge-est', 'Established'];
-}
-function formatAge(days) {
-  if (days === null || days === undefined || isNaN(days)) return '—';
-  if (days < 1)   return 'Today';
-  if (days < 30)  return days + 'd';
-  if (days < 365) return Math.floor(days / 30) + 'mo';
-  const y = Math.floor(days / 365), m = Math.floor((days % 365) / 30);
-  return m > 0 ? y + 'y ' + m + 'mo' : y + 'y';
-}
-function formatFollowDuration(followedAt) {
-  if (!followedAt) return '—';
-  const days = Math.floor((Date.now() - new Date(followedAt)) / 86400000);
-  return formatAge(days);
-}
-function formatFollowDurationBetween(followedAt, unfollowedAt) {
-  if (!followedAt || !unfollowedAt) return '—';
-  const days = Math.floor((new Date(unfollowedAt) - new Date(followedAt)) / 86400000);
-  return formatAge(days);
+  if (days < 30) return '<span class="pill new">New</span>';
+  if (days < 365) return '<span class="pill young">Young</span>';
+  return '<span class="pill est">Established</span>';
 }
 
-function renderTable() {
-  const q = document.getElementById('search').value.toLowerCase();
+function sortValue(row, key) {
+  if (key === 'login') return row.login.toLowerCase();
+  if (key === 'days') return row.days == null ? -1 : row.days;
+  if (key === 'duration') { const d = daysBetween(row.followedAt, row.unfollowedAt); return d == null ? -1 : d; }
+  // dates: created / followedAt / unfollowedAt — missing values sort last
+  return row[key] ? new Date(row[key]).getTime() : null;
+}
+function sortRows(rows) {
+  return [...rows].sort((a, b) => {
+    const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
+    if (va === null && vb === null) return 0;
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    return 0;
+  });
+}
+
+function headerHtml(cols) {
+  return '<tr>' + cols.map(c => {
+    if (!c.sortable) return '<th>' + c.label + '</th>';
+    const on = sortKey === c.key;
+    const arrow = on ? (sortDir === 1 ? '▲' : '▼') : '⇅';
+    return '<th class="sortable' + (on ? ' sorted' : '') + '" onclick="setSort(&quot;' + c.key + '&quot;)">' + c.label + '<i class="sort-icon">' + arrow + '</i></th>';
+  }).join('') + '</tr>';
+}
+
+function render() {
+  const thead = document.getElementById('thead');
   const tbody = document.getElementById('tbody');
+  const search = document.getElementById('fSearch').value.toLowerCase();
 
-  if (activeFilter === 'unfollowed') {
-    let data = allUnfollows.filter(v => v.login.toLowerCase().includes(q));
-    // Sort unfollows by login or followedAt
-    data = [...data].sort((a, b) => {
-      if (sortKey === 'login') return sortDir * a.login.localeCompare(b.login);
-      if (sortKey === 'followedAt') {
-        const va = a.followedAt ? new Date(a.followedAt).getTime() : Infinity;
-        const vb = b.followedAt ? new Date(b.followedAt).getTime() : Infinity;
-        return sortDir * (va < vb ? -1 : va > vb ? 1 : 0);
-      }
-      return 0;
-    });
-    if (!data.length) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty">No unfollows recorded yet — checks every 10 min.</td></tr>';
+  if (tab === 'unfollows') {
+    thead.innerHTML = headerHtml(UNFOLLOW_COLS);
+    let rows = (data.unfollows || []).filter(u => u.login.toLowerCase().includes(search));
+    rows = sortRows(rows);
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">' + (search ? 'No unfollows match your search.' : 'No unfollows recorded yet. Followers are checked every few minutes.') + '</td></tr>';
       return;
     }
-    tbody.innerHTML = data.map(v => {
-      const duration   = formatFollowDurationBetween(v.followedAt, v.unfollowedAt);
-      const unfollowAt = new Date(v.unfollowedAt).toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
-      const botBadge   = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
-      return '<tr>' +
-        '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
-        '<td style="color:var(--muted)">' + duration + '</td>' +
-        '<td style="color:var(--faint)">' + unfollowAt + '</td>' +
-        '<td>' + botBadge + '</td>' +
-        '</tr>';
+    tbody.innerHTML = rows.map(u => {
+      const st = u.suspect ? '<span class="pill bot">⚠ Suspected bot</span>' : '<span class="pill clean">Clean</span>';
+      return '<tr' + (u.suspect ? ' class="suspected"' : '') + '>'
+        + '<td><a class="user' + (u.suspect ? ' bot' : '') + '" href="https://twitch.tv/' + esc(u.login) + '" target="_blank">' + esc(u.login) + '</a></td>'
+        + '<td>' + fmtAge(daysBetween(u.followedAt, u.unfollowedAt)) + '</td>'
+        + '<td class="muted">' + fmtDate(u.followedAt) + '</td>'
+        + '<td class="muted">' + fmtDateTime(u.unfollowedAt) + '</td>'
+        + '<td>' + st + '</td>'
+        + '</tr>';
     }).join('');
     return;
   }
 
-  let data = allAccounts.filter(v => {
-    if (!v.login.toLowerCase().includes(q)) return false;
-    if (activeFilter === 'suspect')        return v.suspect;
-    if (activeFilter === 'chatters')       return v.inChat;
-    if (activeFilter === 'followers-only') return !v.inChat;
-    return true;
-  });
-  data = sortAccounts(data);
-  if (!data.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">No accounts match this filter.</td></tr>';
+  thead.innerHTML = headerHtml(ACCOUNT_COLS);
+  const source = document.getElementById('fSource').value;
+  let rows = data.accounts || [];
+  if (tab === 'bots') rows = rows.filter(a => a.suspect);
+  if (source === 'chatter') rows = rows.filter(a => a.inChat);
+  else if (source === 'follower') rows = rows.filter(a => !a.inChat);
+  if (search) rows = rows.filter(a => a.login.toLowerCase().includes(search));
+  rows = sortRows(rows);
+
+  if (!rows.length) {
+    const msg = tab === 'bots' ? 'No suspected bots right now.' : 'No accounts match.';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">' + msg + '</td></tr>';
     return;
   }
-  tbody.innerHTML = data.map(v => {
-    const [ageCls, ageLabel] = ageBadge(v.days);
-    const dateStr   = new Date(v.created).toLocaleDateString('en-US', { year:'numeric', month:'short', day:'numeric' });
-    const rowCls    = v.suspect ? ' class="suspected"' : '';
-    const botBadge  = v.suspect ? '<span class="badge badge-bot">⚠ Bot</span>' : '';
-    const srcBadge  = v.inChat
-      ? '<span class="badge badge-chat">In chat</span>' + (v.isFollower ? '<span class="badge badge-follow">Follower</span>' : '')
-      : '<span class="badge badge-follow">Follower</span>';
-    const followDur = v.isFollower ? formatFollowDuration(v.followedAt) : '—';
-    const banBtn    = v.suspect
-      ? '<button class="ban-btn" id="ban-' + v.login + '" onclick="banUser(&quot;' + v.login + '&quot;)">🔨 Ban</button>'
-      : '';
-    return '<tr' + rowCls + '>' +
-      '<td><a href="https://twitch.tv/' + v.login + '" target="_blank" class="account-link' + (v.suspect?' bot':'') + '">' + v.login + '</a></td>' +
-      '<td style="color:var(--muted)">' + dateStr + '</td>' +
-      '<td style="color:var(--faint)">' + formatAge(v.days) + '</td>' +
-      '<td style="color:var(--muted)">' + followDur + '</td>' +
-      '<td>' + srcBadge + '</td>' +
-      '<td>' + botBadge + '<span class="badge ' + ageCls + '">' + ageLabel + '</span></td>' +
-      '<td>' + banBtn + '</td>' +
-      '</tr>';
+  tbody.innerHTML = rows.map(a => {
+    let src;
+    if (a.inChat && a.isFollower) src = '<span class="pill both">Chatter + follower</span>';
+    else if (a.inChat) src = '<span class="pill chatter">Chatter</span>';
+    else src = '<span class="pill follower">Follower</span>';
+    const status = (a.suspect ? '<span class="pill bot">⚠ Suspected bot</span>' : '') + ageBadge(a.days);
+    const ban = a.suspect ? '<button class="ban-btn" data-login="' + esc(a.login) + '" onclick="banUser(this)">Ban</button>' : '';
+    const following = a.isFollower && a.followedAt ? fmtAge(daysSince(a.followedAt)) : '—';
+    return '<tr' + (a.suspect ? ' class="suspected"' : '') + '>'
+      + '<td><a class="user' + (a.suspect ? ' bot' : '') + '" href="https://twitch.tv/' + esc(a.login) + '" target="_blank">' + esc(a.login) + '</a></td>'
+      + '<td class="muted">' + fmtDate(a.created) + '</td>'
+      + '<td>' + fmtAge(a.days) + '</td>'
+      + '<td>' + following + '</td>'
+      + '<td>' + src + '</td>'
+      + '<td>' + status + '</td>'
+      + '<td>' + ban + '</td>'
+      + '</tr>';
   }).join('');
 }
 
-async function banUser(login) {
-  const btn = document.getElementById('ban-' + login);
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = 'Banning…';
-  try {
-    const r = await fetch('/api/ban', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ login })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'Ban failed');
-    btn.textContent = '✓ Banned';
-    btn.classList.add('done');
-    // Fade out the row
-    const row = btn.closest('tr');
-    if (row) { row.style.transition = 'opacity 0.6s'; row.style.opacity = '0.3'; }
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = '🔨 Ban';
-    alert('Ban failed: ' + e.message);
-  }
+function renderChrome() {
+  const s = data.stats || {};
+  const set = (id, v) => { document.getElementById(id).textContent = (v == null ? '—' : Number(v).toLocaleString()); };
+  set('sChatters', s.chatters); set('sFollowers', s.followers); set('sBots', s.suspects); set('sUnfollows', s.unfollows);
+  set('sBotsChat', s.suspectsChat); set('sBotsFollow', s.suspectsFollow); set('sNew', s.newAccounts); set('sEst', s.established);
+
+  const cBots = document.getElementById('cBots');
+  cBots.textContent = s.suspects || 0;
+  cBots.classList.toggle('hot', (s.suspects || 0) > 0);
+  document.getElementById('cUnfollows').textContent = s.unfollows || 0;
+
+  const badge = document.getElementById('statusBadge');
+  if (data.error) { badge.textContent = '⚠ Error'; badge.className = 'badge err'; }
+  else if (data.running) { badge.textContent = '● Scanning…'; badge.className = 'badge ok'; }
+  else if (data.lastScan) { badge.textContent = '● Live'; badge.className = 'badge ok'; }
+  else { badge.textContent = 'Starting…'; badge.className = 'badge'; }
+
+  document.getElementById('scanInfo').textContent = data.lastScan
+    ? 'Scan #' + data.scanCount + ' · ' + new Date(data.lastScan).toLocaleTimeString()
+    : '';
+
+  const eb = document.getElementById('errorBanner');
+  if (data.error) { eb.textContent = '⚠ ' + data.error; eb.style.display = 'block'; }
+  else eb.style.display = 'none';
+
+  document.getElementById('logBox').innerHTML = (data.log || []).map(e =>
+    '<div class="' + (e.type !== 'info' ? esc(e.type) : '') + '">[' + new Date(e.time).toLocaleTimeString() + '] ' + esc(e.msg) + '</div>'
+  ).join('') || '<div>No scans yet.</div>';
+}
+
+async function doBan(login) {
+  const r = await fetch('/api/ban', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ login })
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) throw new Error(j.error || 'Ban failed');
+  data.accounts = (data.accounts || []).filter(a => a.login !== login);
+}
+
+async function banUser(btn) {
+  const login = btn.getAttribute('data-login');
+  btn.disabled = true; btn.textContent = 'Banning…';
+  try { await doBan(login); showToast('✅ Banned ' + login); render(); }
+  catch (e) { showToast('❌ ' + login + ': ' + e.message); btn.disabled = false; btn.textContent = 'Ban'; }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => t.classList.remove('show'), 3500);
 }
 
 async function poll() {
   try {
     const r = await fetch('/api/state');
-    if (!r.ok) return;
-    const d = await r.json();
-
-    // Header
-    document.getElementById('channel-label').textContent =
-      (d.scanCount ? 'Scan #' + d.scanCount + ' · ' : '') +
-      (d.lastScan ? 'Last: ' + new Date(d.lastScan).toLocaleTimeString() : 'Starting…');
-    document.getElementById('pill-text').textContent = d.running ? 'Scanning…' : 'Watching';
-
-    // Error
-    const eb = document.getElementById('error-banner');
-    if (d.error) { eb.textContent = '⚠ ' + d.error; eb.style.display = 'block'; }
-    else { eb.style.display = 'none'; }
-
-    // Stats
-    document.getElementById('s-chatters').textContent        = d.stats.chatters.toLocaleString();
-    document.getElementById('s-followers').textContent       = d.stats.followers.toLocaleString();
-    document.getElementById('s-suspects').textContent        = d.stats.suspects;
-    document.getElementById('s-suspects-chat').textContent   = d.stats.suspectsChat;
-    document.getElementById('s-suspects-follow').textContent = d.stats.suspectsFollow;
-    document.getElementById('s-new').textContent             = d.stats.newAccounts;
-    document.getElementById('s-est').textContent             = d.stats.established;
-
-    // Unfollow badge on chip
-    const ub = document.getElementById('unfollow-badge');
-    if (d.stats.unfollows > 0) {
-      ub.textContent = d.stats.unfollows;
-      ub.style.display = 'inline';
-    } else {
-      ub.style.display = 'none';
+    if (r.redirected || r.status === 401) { location = '/login'; return; }
+    if (r.ok) {
+      data = await r.json();
+      renderChrome();
+      // Don't re-draw the table while a ban is in progress
+      if (!document.querySelector('#tbody .ban-btn:disabled')) render();
     }
-
-    // Data
-    allAccounts  = d.accounts;
-    allUnfollows = d.unfollows || [];
-    renderTable();
-
-    // Log
-    const logEl = document.getElementById('log-list');
-    if (!d.log.length) { logEl.innerHTML = '<div style="color:var(--faint)">No scans yet.</div>'; }
-    else {
-      logEl.innerHTML = d.log.map(e => {
-        const t = new Date(e.time).toLocaleTimeString();
-        return '<div class="log-entry ' + (e.type !== 'info' ? e.type : '') + '">[' + t + '] ' + e.msg + '</div>';
-      }).join('');
-    }
-  } catch(e) { console.error('Poll error:', e); }
+  } catch (e) { console.error(e); }
 }
 
-updateSortArrows();
+render();
 poll();
 setInterval(poll, 10000);
 </script>
