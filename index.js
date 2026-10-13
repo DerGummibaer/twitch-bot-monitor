@@ -699,6 +699,12 @@ function dashboardPage() {
           </ol>
           <p style="margin-top:10px">The background is see-through unless you change it under <b>Look</b> below.</p>
           <p>Keep this link private. Anyone with it can see the credits, but nothing else.</p>
+          <h3 style="margin-top:14px">Try it in OBS before a stream</h3>
+          <p>Use this test link instead. It shows a made-up stream with an orange “Sample data” tag in the corner. Swap back to the real link above before going live.</p>
+          <div class="linkrow" style="margin-bottom:0">
+            <input id="testLink" readonly value="Loading…">
+            <button class="btn ghost" onclick="copyTestLink()">Copy</button>
+          </div>
         </div>
         <div class="card" id="lookCard" style="margin-bottom:16px">
           <h3>Look</h3>
@@ -751,8 +757,9 @@ function dashboardPage() {
       </div>
       <div class="preview-col">
         <div class="preview"><iframe id="creditsFrame" title="Credits preview"></iframe></div>
-        <div style="display:flex;gap:8px;margin-top:10px">
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
           <button class="btn ghost" onclick="reloadPreview()">Restart preview</button>
+          <label class="check" style="margin-left:6px"><input type="checkbox" id="useSample" onchange="reloadPreview()"> Preview with sample data</label>
           <a class="btn ghost" id="creditsOpen" href="#" target="_blank">Open full screen</a>
         </div>
       </div>
@@ -1034,8 +1041,16 @@ document.addEventListener('DOMContentLoaded', () => {
 function reloadPreview() {
   const u = creditsUrl();
   if (!u) return;
-  document.getElementById('creditsFrame').src = u + '?t=' + Date.now();
-  document.getElementById('creditsOpen').href = u;
+  const sample = document.getElementById('useSample').checked;
+  document.getElementById('creditsFrame').src = u + (sample ? '?sample=1&' : '?') + 't=' + Date.now();
+  document.getElementById('creditsOpen').href = u + (sample ? '?sample=1' : '');
+  document.getElementById('testLink').value = u + '?sample=1';
+}
+function copyTestLink() {
+  const el = document.getElementById('testLink');
+  const done = () => showToast('✅ Test link copied');
+  if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, () => el.select());
+  else { el.select(); document.execCommand('copy'); done(); }
 }
 function copyCreditsLink() {
   const u = creditsUrl();
@@ -1053,7 +1068,11 @@ function renderCredits() {
   if (!st) return;
   const link = document.getElementById('creditsLink');
   if (link.value !== creditsUrl()) link.value = creditsUrl();
-  if (!lookLoaded && st.settings) { fillLook(st.settings); lookLoaded = true; }
+  if (!lookLoaded && st.settings) {
+    fillLook(st.settings);
+    lookLoaded = true;
+    if (st.credits && st.credits.empty) { document.getElementById('useSample').checked = true; reloadPreview(); }
+  }
   const c = st.credits || {};
   const box = document.getElementById('creditsSummary');
   const heading = document.getElementById('creditsHeading');

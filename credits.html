@@ -35,6 +35,9 @@
   }
 
   #roll { position: absolute; left: 0; right: 0; top: 0; will-change: transform; padding: 0 calc(var(--u) * 6); }
+  #sampleTag { position: fixed; top: 10px; left: 10px; z-index: 2; background: #f59e0b; color: #000; text-shadow: none;
+    font: 600 13px/1.3 system-ui, sans-serif; padding: 4px 10px; border-radius: 4px; }
+  #sampleTag[hidden] { display: none; }
   #probe { position: absolute; visibility: hidden; height: calc(var(--u) * 100); width: 1px; }
 
   /* Opening title card */
@@ -96,6 +99,7 @@
 <body>
 <div id="roll"></div>
 <div id="probe"></div>
+<div id="sampleTag" hidden>Sample data — remove ?sample=1 from the link before going live</div>
 
 <script>
 (function () {
@@ -104,7 +108,8 @@
   var urlBg    = params.get('bg');                    // ?bg=black or ?bg=transparent overrides the editor
   var LOOP     = params.get('loop') !== '0';
 
-  var dataUrl  = location.pathname.replace(/\/+$/, '') + '/data';
+  var SAMPLE   = params.get('sample') === '1';
+  var dataUrl  = location.pathname.replace(/\/+$/, '') + '/data' + (SAMPLE ? '?sample=1' : '');
   var roll     = document.getElementById('roll');
   var anim     = null;
   var lastData = null;
@@ -238,6 +243,7 @@
     if (closing) html += '<footer class="closing">' + closing + '</footer>';
 
     roll.innerHTML = html;
+    document.getElementById('sampleTag').hidden = !d.sample;
     return true;
   }
 

@@ -549,8 +549,37 @@ function createCredits(ctx) {
   });
   app.get('/credits/:key/data', (req, res) => {
     if (req.params.key !== creditsKey) return res.status(404).json({ error: 'Not found' });
-    res.set('Cache-Control', 'no-store').json({ ...buildCredits(), settings });
+    const body = req.query.sample === '1' ? { ...sampleCredits(), sample: true } : buildCredits();
+    res.set('Cache-Control', 'no-store').json({ ...body, settings });
   });
+
+  // A made-up stream for trying out the look. Never stored, never mixed with real data.
+  function sampleCredits() {
+    const now = Date.now();
+    const followers = ['PixelPanda', 'mossy_otter', 'Kaito_7', 'luna_wav', 'BreadBox', 'SirLurksALot',
+      'tea_and_toast', 'Frostbyte', 'juniper_jay', 'CaptainCozy', 'OkayOkayOkay', 'ZeldaFan88', 'marigold', 'NewFan'];
+    return {
+      empty: false, live: false,
+      channel: live.channelName || env.TWITCH_CHANNEL || 'YourChannel',
+      title: 'Sample stream — this is test data',
+      game: 'Just Chatting',
+      startedAt: new Date(now - (3 * 3600 + 12 * 60) * 1000).toISOString(),
+      endedAt: new Date(now).toISOString(),
+      durationSec: 3 * 3600 + 12 * 60,
+      longest:   { name: 'Lurker_Lou', seconds: 3 * 3600 + 10 * 60 },
+      chattiest: { name: 'CozyGamer', messages: 412 },
+      gifters:   [{ name: 'GiftGuru', total: 25 }, { name: 'Kindred', total: 2 }, { name: 'Anonymous', total: 1 }],
+      cheerers:  [{ name: 'CozyGamer', total: 5000 }, { name: 'Chatty_Cathy', total: 150 }],
+      subs: [
+        { name: 'SubSam', months: 1, plan: '1000' },
+        { name: 'LoyalLia', months: 14, plan: '2000' },
+        { name: 'PrimePete', months: 1, plan: 'Prime' }
+      ],
+      raids: [{ name: 'RaidRita', viewers: 42 }, { name: 'TinyStreamer', viewers: 3 }],
+      followers,
+      totals: { messages: 2318, chatters: 97 }
+    };
+  }
 
   // Save the look from the dashboard editor
   app.post('/api/credits-settings', requireAuth, async (req, res) => {
