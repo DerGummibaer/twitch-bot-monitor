@@ -60,6 +60,15 @@ async function initDb() {
     addLog('Turso not configured — history will reset on restart', 'warn');
     return;
   }
+  // A brief network hiccup at startup shouldn't cost the whole session its storage
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    if (await connectDb(attempt)) return;
+    if (attempt < 4) await new Promise(r => setTimeout(r, attempt * 5000));
+  }
+  addLog('Turso still unreachable — running without long-term storage until the next restart', 'error');
+}
+
+async function connectDb(attempt) {
   try {
     db = createClient({ url: TURSO_URL, authToken: TURSO_AUTH_TOKEN });
     await db.batch([
@@ -90,9 +99,11 @@ async function initDb() {
     }));
 
     addLog(`✅ Turso DB connected — loaded ${state.unfollows.length} unfollows, ${state.alerted.size} alerted bots`);
+    return true;
   } catch (e) {
     db = null;
-    addLog(`Turso connection failed: ${e.message} — running without long-term storage`, 'error');
+    addLog(`Turso connection failed (attempt ${attempt} of 4): ${e.message}`, 'error');
+    return false;
   }
 }
 
@@ -426,7 +437,8 @@ app.get('/api/state', requireAuth, (req, res) => {
     },
     accounts,
     unfollows: state.unfollows,
-    stream:    credits.status()
+    stream:    credits.status(),
+    storage:   { configured: !!(TURSO_URL && TURSO_AUTH_TOKEN), connected: !!db }
   });
 });
 
@@ -573,6 +585,10 @@ function dashboardPage() {
   fieldset.shows legend{font-size:12px;color:#adadb8;padding:0 4px}
   .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   #lkStatus{font-size:12px;color:#adadb8}
+  #lookCard .actions{position:sticky;bottom:0;background:#18181b;padding:12px 0 4px;border-top:1px solid #2d2d35;z-index:2}
+  .savebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding:12px 14px;border-radius:10px;background:#2b2210;border:1px solid #6b4f12;color:#f5c451;font-size:13px}
+  .savebar[hidden]{display:none}
+  .savebar span{flex:1;min-width:160px}
   #lkStatus.dirty{color:#f59e0b}
   @media(max-width:900px){.credits-grid{grid-template-columns:1fr}.preview-col{position:static}}
   .logout{border:1px solid #3a3a4a;color:#adadb8;padding:5px 12px;border-radius:6px;font-size:12px;text-decoration:none}
@@ -643,6 +659,7 @@ function dashboardPage() {
 </header>
 <div class="main">
   <div id="errorBanner" class="error-banner"></div>
+  <div id="storageBanner" class="error-banner"></div>
 
   <div class="stats">
     <div class="stat"><div class="stat-val blue" id="sChatters">—</div><div class="stat-lbl">Chatters</div></div>
@@ -745,6 +762,7 @@ function dashboardPage() {
             </fieldset>
             <div class="actions">
               <button class="btn" id="lkSave" onclick="saveLook()">Save</button>
+              <button class="btn ghost" id="lkDiscard" onclick="discardLook()" hidden>Discard</button>
               <button class="btn ghost" onclick="resetLook()">Reset to default</button>
               <span id="lkStatus"></span>
             </div>
@@ -756,6 +774,11 @@ function dashboardPage() {
         </div>
       </div>
       <div class="preview-col">
+        <div class="savebar" style="margin:0 0 12px" id="previewSaveBar" hidden>
+          <span>You have unsaved changes. The preview shows them, but OBS won’t until you save.</span>
+          <button class="btn" onclick="saveLook()">Save</button>
+          <button class="btn ghost" onclick="discardLook()">Discard</button>
+        </div>
         <div class="preview"><iframe id="creditsFrame" title="Credits preview"></iframe></div>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
           <button class="btn ghost" onclick="reloadPreview()">Restart preview</button>
@@ -981,6 +1004,20 @@ function setLookStatus(text, dirty) {
   el.textContent = text;
   el.className = dirty ? 'dirty' : '';
 }
+function showSaveBar(on) {
+  document.getElementById('previewSaveBar').hidden = !on;
+  document.getElementById('lkDiscard').hidden = !on;
+}
+function discardLook() {
+  if (data.stream && data.stream.settings) fillLook(data.stream.settings);
+  lookDirty = false;
+  showSaveBar(false);
+  setLookStatus('Changes discarded.', false);
+  sendPreview();
+}
+window.addEventListener('beforeunload', e => {
+  if (lookDirty) { e.preventDefault(); e.returnValue = ''; }
+});
 function sendPreview() {
   const f = document.getElementById('creditsFrame');
   if (f && f.contentWindow) f.contentWindow.postMessage({ type: 'credits-preview', settings: readLook() }, location.origin);
@@ -993,7 +1030,8 @@ function onLookEdit(e) {
   }
   lookDirty = true;
   updateLookLabels();
-  setLookStatus('Unsaved changes — the preview shows them, OBS doesn’t yet', true);
+  setLookStatus('Unsaved changes', true);
+  showSaveBar(true);
   clearTimeout(previewTimer);
   previewTimer = setTimeout(sendPreview, 300);
 }
@@ -1006,6 +1044,7 @@ async function postLook(body) {
   if (data.stream) data.stream.settings = j.settings;
   fillLook(j.settings);
   lookDirty = false;
+  showSaveBar(false);
   sendPreview();
   return j;
 }
@@ -1098,6 +1137,16 @@ function renderCredits() {
 }
 
 function renderChrome() {
+  const sb = document.getElementById('storageBanner');
+  const stg = data.storage;
+  if (stg && !stg.connected) {
+    sb.textContent = stg.configured
+      ? '⚠ The database isn’t connected, so unfollows, stream credits and the saved credits look won’t survive a restart. See the Log tab for the reason.'
+      : '⚠ No database is set up (TURSO_URL and TURSO_AUTH_TOKEN in Render), so unfollows, stream credits and the saved credits look won’t survive a restart.';
+    sb.style.display = 'block';
+  } else {
+    sb.style.display = 'none';
+  }
   const lb = document.getElementById('liveBadge');
   const lv = data.stream && data.stream.live;
   if (lv && lv.isLive) {
